@@ -19,8 +19,9 @@ data/cache/
 data/*.duckdb
 data/*.duckdb.wal
 
-# Editors
+# Editors / tooling metadata
 .vscode/
 .idea/
+.claude/
 *.swp
 .DS_Store
