@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ffpts"
+version = "0.1.0"
+description = "Queryable NFL player & team season stats DB scraped from Pro Football Reference, with computed Std/Half/PPR fantasy points."
+requires-python = ">=3.11"
+authors = [{ name = "FF-pts" }]
+dependencies = [
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "duckdb>=1.0",
+    "pandas>=2.2",
+    "tenacity>=8.2",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-httpx>=0.30",
+]
+
+[project.scripts]
+ffpts = "ffpts.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["ffpts*"]
+exclude = ["tests*", "data*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

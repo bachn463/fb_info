@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project data (cache + DB are gitignored; HTML fixtures under tests/ are NOT)
+data/cache/
+data/*.duckdb
+data/*.duckdb.wal
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
