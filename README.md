@@ -20,12 +20,17 @@ library of named helpers. Data source is [nflverse][nflverse] via the
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 
-# Build a DB covering 2017-2024 (loads from nflverse, writes data/ff.duckdb).
-ffpts build --start 2017 --end 2024
+# Build a DB covering 1999-2025 (loads from nflverse, writes data/ff.duckdb).
+ffpts build --start 1999 --end 2025
 
 # Run a named helper:
 ffpts ask flex-top --round 3 --n 10 --scoring ppr
 ffpts ask div-int  --division "NFC North" --start 1999 --end 2005 --mode historical
+ffpts ask pos-top  --position QB --rank-by pass_yds --draft-rounds 4,5
+ffpts ask pos-top  --position WR --rank-by rec_yds  --team SF
+ffpts ask pos-top  --position ALL --rank-by def_int --division "NFC North"
+ffpts ask pos-top  --position ALL --first-name-contains z --rank-by fpts_ppr
+ffpts ask pos-top  --position ALL --last-name-contains  z --rank-by fpts_ppr
 
 # Or any raw SQL:
 ffpts query "SELECT name, fpts_ppr FROM v_player_season_full

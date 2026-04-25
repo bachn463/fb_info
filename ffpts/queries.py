@@ -167,6 +167,11 @@ def pos_topN(
     start: int | None = None,
     end: int | None = None,
     draft_rounds: list[int] | None = None,
+    team: str | None = None,
+    division: str | None = None,
+    conference: str | None = None,
+    first_name_contains: str | None = None,
+    last_name_contains: str | None = None,
 ) -> tuple[str, list]:
     """Top-N player-seasons at a given position, ranked by ``rank_by``.
 
@@ -182,6 +187,18 @@ def pos_topN(
     Optional ``start`` / ``end`` filter to a year range (inclusive on
     both ends). Optional ``draft_rounds`` filters to player-seasons
     whose draft pick was in any of the given rounds.
+
+    Scope filters (all optional, all combinable):
+    - ``team``: filter to a single team code, e.g. "SF", "DAL".
+      Compared as uppercase against the historical team code on the
+      player-season row.
+    - ``division``: exact match against the per-season division name
+      ("NFC North", "AFC West", "NFC Central" pre-2002, etc.).
+    - ``conference``: "AFC" or "NFC".
+    - ``first_name_contains`` / ``last_name_contains``: case-insensitive
+      substring match on the first / last name (split on the first
+      whitespace in the player's display name). Both can be combined
+      with each other and with everything else.
 
     Returns rows of (name, team, season, position, rank_value,
     draft_round, draft_year, draft_overall_pick) ordered by rank_by
@@ -218,6 +235,28 @@ def pos_topN(
         placeholders = ",".join(["?"] * len(draft_rounds))
         where_clauses.append(f"draft_round IN ({placeholders})")
         params.extend(draft_rounds)
+
+    if team:
+        where_clauses.append("team = ?")
+        params.append(team.upper())
+    if division:
+        where_clauses.append("division = ?")
+        params.append(division)
+    if conference:
+        where_clauses.append("conference = ?")
+        params.append(conference.upper())
+
+    # Name greps: split the display name on the first whitespace.
+    # First name = split_part(name, ' ', 1); last name = the rest,
+    # which collapses suffixes like "Jr." into the last-name match.
+    if first_name_contains:
+        where_clauses.append("split_part(name, ' ', 1) ILIKE ?")
+        params.append(f"%{first_name_contains}%")
+    if last_name_contains:
+        where_clauses.append(
+            "trim(substr(name, length(split_part(name, ' ', 1)) + 1)) ILIKE ?"
+        )
+        params.append(f"%{last_name_contains}%")
 
     where_sql = " AND ".join(where_clauses)
     sql = f"""

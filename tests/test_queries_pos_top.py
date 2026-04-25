@@ -17,6 +17,11 @@ def _seed(db):
         ("cb1", "Pick CB",       2022, "NYJ", "CB", 1, 0, 0, 0, 0.0, 6, 0.0, 0),
         ("de1", "Sack DE",       2023, "PIT", "DE", 1, 0, 0, 0, 0.0, 0, 19.0, 0),
         ("k1",  "Top K",         2023, "BAL", "K",  6, 0, 0, 0, 0.0, 0, 0.0, 35),
+        # Players for name-grep tests; first names with "Z", last names with "Z".
+        ("zfn", "Zach Wilson",       2021, "NYJ", "QB", 1, 2334, 0, 0, 200.0, 0, 0.0, 0),
+        ("zln", "Joey Bosa",         2023, "LAC", "DE", 1, 0, 0, 0, 0.0, 0, 6.5, 0),
+        ("zb",  "Zaven Collins",     2021, "ARI", "LB", 1, 0, 0, 0, 0.0, 1, 1.0, 0),
+        ("ez",  "George Pickens Jr.", 2022, "PIT", "WR", 2, 0, 801, 52, 187.0, 0, 0.0, 0),
     ]
     for pid, name, season, team, pos, rnd, py, ry, rec, ppr, di, ds, fg in rows:
         db.execute(
@@ -36,6 +41,27 @@ def _seed(db):
             """,
             [pid, season, team, pos, py, ry, rec, ppr, di, ds, fg],
         )
+        # Wire team_seasons so division/conference filters work for these rows.
+        # In the seeded data, only certain (team, season) combos are needed:
+        # we add them all here, idempotently.
+        div_for_team = {
+            "DAL": ("NFC", "NFC East"),
+            "WAS": ("NFC", "NFC East"),
+            "BUF": ("AFC", "AFC East"),
+            "NYJ": ("AFC", "AFC East"),
+            "SF":  ("NFC", "NFC West"),
+            "ARI": ("NFC", "NFC West"),
+            "LAC": ("AFC", "AFC West"),
+            "PIT": ("AFC", "AFC North"),
+            "KC":  ("AFC", "AFC West"),
+            "BAL": ("AFC", "AFC North"),
+        }
+        conf, div = div_for_team[team]
+        db.execute(
+            "INSERT INTO team_seasons (team, season, conference, division, franchise) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            [team, season, conf, div, "test"],
+        )
 
 
 def test_pos_top_qb_ranks_by_pass_yds(db):
@@ -43,8 +69,8 @@ def test_pos_top_qb_ranks_by_pass_yds(db):
     sql, params = pos_topN("QB", n=10, rank_by="pass_yds")
     rows = db.execute(sql, params).fetchall()
     names = [r[0] for r in rows]
-    # Top QB (4306) > Late Round QB (3667) > 5th Round QB (3000)
-    assert names == ["Top QB", "Late Round QB", "5th Round QB"]
+    # Top QB (4306) > Late Round QB (3667) > 5th Round QB (3000) > Zach Wilson (2334)
+    assert names == ["Top QB", "Late Round QB", "5th Round QB", "Zach Wilson"]
 
 
 def test_pos_top_qb_filtered_to_late_rounds_answers_user_question(db):
@@ -64,8 +90,8 @@ def test_pos_top_flex_alias_expands_to_rb_wr_te(db):
     positions = {r[3] for r in rows}
     assert positions == {"RB", "WR", "TE"}
     names = [r[0] for r in rows]
-    # Top WR (403) > Top RB (391) > Top TE (240)
-    assert names == ["Top WR", "Top RB", "Top TE"]
+    # Top WR (403) > Top RB (391) > Top TE (240) > Pickens Jr. (187)
+    assert names == ["Top WR", "Top RB", "Top TE", "George Pickens Jr."]
 
 
 def test_pos_top_all_alias_includes_every_position(db):
@@ -89,7 +115,8 @@ def test_pos_top_de_by_def_sacks(db):
     _seed(db)
     sql, params = pos_topN("DE", n=10, rank_by="def_sacks")
     rows = db.execute(sql, params).fetchall()
-    assert [r[0] for r in rows] == ["Sack DE"]
+    # Sack DE (19) > Joey Bosa (6.5)
+    assert [r[0] for r in rows] == ["Sack DE", "Joey Bosa"]
 
 
 def test_pos_top_k_by_fg_made(db):
@@ -142,6 +169,100 @@ def test_rank_by_allowlist_includes_expected_columns():
 def test_position_aliases_table():
     assert POSITION_ALIASES["FLEX"] == ["RB", "WR", "TE"]
     assert POSITION_ALIASES["ALL"] is None
+
+
+def test_pos_top_team_filter(db):
+    _seed(db)
+    sql, params = pos_topN("ALL", n=10, rank_by="fpts_ppr", team="DAL")
+    rows = db.execute(sql, params).fetchall()
+    teams = {r[1] for r in rows}
+    assert teams == {"DAL"}
+    # Order: WR (403.2) > QB (270.0)
+    names = [r[0] for r in rows]
+    assert names == ["Top WR", "Late Round QB"]
+
+
+def test_pos_top_team_filter_is_case_insensitive(db):
+    _seed(db)
+    sql_upper, p_upper = pos_topN("ALL", n=10, rank_by="fpts_ppr", team="DAL")
+    sql_lower, p_lower = pos_topN("ALL", n=10, rank_by="fpts_ppr", team="dal")
+    assert (
+        db.execute(sql_upper, p_upper).fetchall()
+        == db.execute(sql_lower, p_lower).fetchall()
+    )
+
+
+def test_pos_top_division_filter(db):
+    _seed(db)
+    sql, params = pos_topN(
+        "ALL", n=10, rank_by="fpts_ppr", division="AFC East"
+    )
+    rows = db.execute(sql, params).fetchall()
+    teams = {r[1] for r in rows}
+    assert teams == {"BUF", "NYJ"}
+
+
+def test_pos_top_conference_filter(db):
+    _seed(db)
+    sql, params = pos_topN(
+        "ALL", n=20, rank_by="fpts_ppr", conference="AFC"
+    )
+    rows = db.execute(sql, params).fetchall()
+    teams = {r[1] for r in rows}
+    # Every AFC team in the seed: BUF, NYJ, LAC, PIT, KC, BAL
+    assert teams == {"BUF", "NYJ", "LAC", "PIT", "KC", "BAL"}
+
+
+def test_pos_top_first_name_contains_grep(db):
+    _seed(db)
+    sql, params = pos_topN(
+        "ALL", n=20, rank_by="fpts_ppr", first_name_contains="z"
+    )
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    # First names with 'z': "Zach Wilson", "Zaven Collins". Case-insensitive.
+    assert sorted(names) == sorted(["Zach Wilson", "Zaven Collins"])
+
+
+def test_pos_top_last_name_contains_grep(db):
+    _seed(db)
+    sql, params = pos_topN(
+        "ALL", n=20, rank_by="fpts_ppr", last_name_contains="z"
+    )
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    # Last names containing 'z': Bosa? no. Wait: Joey Bosa has 'B', no z.
+    # "George Pickens Jr." -- last name segment is "Pickens Jr." -- no z either.
+    # Hmm let me re-check seeded names with 'z' in the last name...
+    # None. Let me add one inline.
+    assert names == []
+
+
+def test_pos_top_last_name_grep_finds_match(db):
+    _seed(db)
+    db.execute("INSERT INTO players (player_id, name) VALUES ('zlast', 'Joey Lopez')")
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) "
+        "VALUES ('zlast', 2023, 'SF', 'WR', 250.0)"
+    )
+    sql, params = pos_topN("ALL", n=20, rank_by="fpts_ppr", last_name_contains="z")
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    assert "Joey Lopez" in names
+    # First-name grep for 'z' should NOT pick up Joey Lopez.
+    sql2, params2 = pos_topN("ALL", n=20, rank_by="fpts_ppr", first_name_contains="z")
+    names2 = [r[0] for r in db.execute(sql2, params2).fetchall()]
+    assert "Joey Lopez" not in names2
+
+
+def test_pos_top_combined_filters(db):
+    _seed(db)
+    # FLEX (RB/WR/TE) on DAL in 2023, ranked by PPR — expect just Top WR.
+    sql, params = pos_topN(
+        "FLEX", n=10, rank_by="fpts_ppr",
+        team="DAL", start=2023, end=2023,
+    )
+    rows = db.execute(sql, params).fetchall()
+    assert [r[0] for r in rows] == ["Top WR"]
 
 
 def test_pos_top_returns_expected_column_order(db):

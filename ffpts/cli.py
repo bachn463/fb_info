@@ -166,9 +166,38 @@ def ask_pos_top(
         help='Comma-separated draft rounds, e.g. "4,5". Filters to '
              "player-seasons whose draft pick was in any of these rounds.",
     ),
+    team: str | None = typer.Option(
+        None, "--team", help='Team code, e.g. "SF", "DAL", "GB".'
+    ),
+    division: str | None = typer.Option(
+        None, "--division",
+        help='Per-season division name, e.g. "NFC North", "AFC West", "NFC Central".',
+    ),
+    conference: str | None = typer.Option(
+        None, "--conference", help='"AFC" or "NFC".'
+    ),
+    first_name_contains: str | None = typer.Option(
+        None, "--first-name-contains",
+        help="Case-insensitive substring match on first name. "
+             'Example: --first-name-contains z',
+    ),
+    last_name_contains: str | None = typer.Option(
+        None, "--last-name-contains",
+        help="Case-insensitive substring match on last name (everything "
+             'after the first space in the display name).',
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the DuckDB file."),
 ) -> None:
-    """Top-N player-seasons at a position, ranked by a stat column."""
+    """Top-N player-seasons at a position, ranked by a stat column.
+
+    All filter flags combine — pass any subset to scope the result.
+    Examples:
+
+        ffpts ask pos-top --position QB --rank-by pass_yds --draft-rounds 4,5
+        ffpts ask pos-top --position WR --rank-by rec_yds --team SF
+        ffpts ask pos-top --position ALL --rank-by def_int --division "NFC North"
+        ffpts ask pos-top --position ALL --first-name-contains z --rank-by fpts_ppr
+    """
     rounds_list: list[int] | None = None
     if draft_rounds:
         try:
@@ -182,6 +211,9 @@ def ask_pos_top(
     sql, params = pos_topN(
         position, n=n, rank_by=rank_by,
         start=start, end=end, draft_rounds=rounds_list,
+        team=team, division=division, conference=conference,
+        first_name_contains=first_name_contains,
+        last_name_contains=last_name_contains,
     )
     con = _open_db(db)
     try:
