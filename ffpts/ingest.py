@@ -225,6 +225,162 @@ def transform_draft_picks(raw: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+# ---------------------------------------------------------------------------
+# Team-seasons (division / conference / franchise per (team, season))
+# ---------------------------------------------------------------------------
+#
+# nflverse exposes team metadata only for the *current* configuration —
+# load_teams() returns one row per franchise with its current division.
+# We need the per-season division because realignment matters for
+# queries like "NFC North 1999-2005" (which spans the 2002 realignment).
+#
+# Hand-encoded eras below cover the 1999+ scope (where nflverse data is
+# reliable). Each era is a (start, end_inclusive, divisions) triple
+# where ``divisions`` maps (conference, division_name) to the team-code
+# list active that era. The ranges encode every realignment in our
+# window:
+#
+#   1999-2001:  pre-2002 layout (6 divisions; AFC Central exists,
+#               Seattle in AFC West, no Houston Texans, Rams=STL,
+#               Chargers=SD, Raiders=OAK).
+#   2002-2015:  8-division realignment + Houston Texans expansion;
+#               Seattle moves to NFC West.
+#   2016:       Rams move STL -> LAR.
+#   2017-2019:  Chargers move SD -> LAC.
+#   2020-:      Raiders move OAK -> LV.
+
+_AFC_EAST_BUF_MIA_NE_NYJ = ["BUF", "MIA", "NE", "NYJ"]
+_AFC_NORTH_BAL_CIN_CLE_PIT = ["BAL", "CIN", "CLE", "PIT"]
+_AFC_SOUTH = ["HOU", "IND", "JAX", "TEN"]
+_NFC_EAST = ["DAL", "NYG", "PHI", "WAS"]
+_NFC_NORTH = ["CHI", "DET", "GB", "MIN"]
+_NFC_SOUTH = ["ATL", "CAR", "NO", "TB"]
+
+
+_ERAS: list[tuple[int, int, dict[tuple[str, str], list[str]]]] = [
+    # 1999-2001: pre-realignment, 6 divisions, no Houston yet.
+    (
+        1999, 2001,
+        {
+            ("AFC", "AFC East"):    ["BUF", "IND", "MIA", "NE", "NYJ"],
+            ("AFC", "AFC Central"): ["BAL", "CIN", "CLE", "JAX", "PIT", "TEN"],
+            ("AFC", "AFC West"):    ["DEN", "KC", "OAK", "SD", "SEA"],
+            ("NFC", "NFC East"):    ["ARI", "DAL", "NYG", "PHI", "WAS"],
+            ("NFC", "NFC Central"): ["CHI", "DET", "GB", "MIN", "TB"],
+            ("NFC", "NFC West"):    ["ATL", "CAR", "NO", "SF", "STL"],
+        },
+    ),
+    # 2002-2015: 8 divisions; Texans expansion; Rams=STL, Chargers=SD,
+    # Raiders=OAK.
+    (
+        2002, 2015,
+        {
+            ("AFC", "AFC East"):  _AFC_EAST_BUF_MIA_NE_NYJ,
+            ("AFC", "AFC North"): _AFC_NORTH_BAL_CIN_CLE_PIT,
+            ("AFC", "AFC South"): _AFC_SOUTH,
+            ("AFC", "AFC West"):  ["DEN", "KC", "OAK", "SD"],
+            ("NFC", "NFC East"):  _NFC_EAST,
+            ("NFC", "NFC North"): _NFC_NORTH,
+            ("NFC", "NFC South"): _NFC_SOUTH,
+            ("NFC", "NFC West"):  ["ARI", "SEA", "SF", "STL"],
+        },
+    ),
+    # 2016: Rams move STL -> LAR.
+    (
+        2016, 2016,
+        {
+            ("AFC", "AFC East"):  _AFC_EAST_BUF_MIA_NE_NYJ,
+            ("AFC", "AFC North"): _AFC_NORTH_BAL_CIN_CLE_PIT,
+            ("AFC", "AFC South"): _AFC_SOUTH,
+            ("AFC", "AFC West"):  ["DEN", "KC", "OAK", "SD"],
+            ("NFC", "NFC East"):  _NFC_EAST,
+            ("NFC", "NFC North"): _NFC_NORTH,
+            ("NFC", "NFC South"): _NFC_SOUTH,
+            ("NFC", "NFC West"):  ["ARI", "SEA", "SF", "LAR"],
+        },
+    ),
+    # 2017-2019: Chargers move SD -> LAC.
+    (
+        2017, 2019,
+        {
+            ("AFC", "AFC East"):  _AFC_EAST_BUF_MIA_NE_NYJ,
+            ("AFC", "AFC North"): _AFC_NORTH_BAL_CIN_CLE_PIT,
+            ("AFC", "AFC South"): _AFC_SOUTH,
+            ("AFC", "AFC West"):  ["DEN", "KC", "OAK", "LAC"],
+            ("NFC", "NFC East"):  _NFC_EAST,
+            ("NFC", "NFC North"): _NFC_NORTH,
+            ("NFC", "NFC South"): _NFC_SOUTH,
+            ("NFC", "NFC West"):  ["ARI", "SEA", "SF", "LAR"],
+        },
+    ),
+    # 2020+: Raiders move OAK -> LV.
+    (
+        2020, 2099,
+        {
+            ("AFC", "AFC East"):  _AFC_EAST_BUF_MIA_NE_NYJ,
+            ("AFC", "AFC North"): _AFC_NORTH_BAL_CIN_CLE_PIT,
+            ("AFC", "AFC South"): _AFC_SOUTH,
+            ("AFC", "AFC West"):  ["DEN", "KC", "LV", "LAC"],
+            ("NFC", "NFC East"):  _NFC_EAST,
+            ("NFC", "NFC North"): _NFC_NORTH,
+            ("NFC", "NFC South"): _NFC_SOUTH,
+            ("NFC", "NFC West"):  ["ARI", "SEA", "SF", "LAR"],
+        },
+    ),
+]
+
+# Earliest year covered by the era table.
+TEAM_SEASONS_MIN_YEAR = 1999
+
+
+def _divisions_for_season(season: int) -> dict[tuple[str, str], list[str]]:
+    for start, end, divisions in _ERAS:
+        if start <= season <= end:
+            return divisions
+    raise ValueError(
+        f"no era defined for season {season}; team_seasons covers {TEAM_SEASONS_MIN_YEAR}+"
+    )
+
+
+def build_team_seasons(seasons: Iterable[int]) -> pl.DataFrame:
+    """Return one row per (team, season) with conference/division/franchise.
+
+    Pure function — no I/O. The era data is hand-encoded above; cross-
+    check it against published NFL realignment history if you change it.
+    """
+    from ffpts.normalize import NFL_TEAM_TO_FRANCHISE
+
+    rows: list[dict] = []
+    for season in seasons:
+        for (conf, div), teams in _divisions_for_season(season).items():
+            for team in teams:
+                franchise = NFL_TEAM_TO_FRANCHISE.get(team)
+                if franchise is None:
+                    raise KeyError(
+                        f"no franchise mapping for team={team!r} (season {season}); "
+                        f"add it to ffpts.normalize.NFL_TEAM_TO_FRANCHISE"
+                    )
+                rows.append(
+                    {
+                        "team": team,
+                        "season": season,
+                        "conference": conf,
+                        "division": div,
+                        "franchise": franchise,
+                    }
+                )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "team": pl.Utf8,
+            "season": pl.Int64,
+            "conference": pl.Utf8,
+            "division": pl.Utf8,
+            "franchise": pl.Utf8,
+        },
+    )
+
+
 def load_draft_picks(
     *,
     loader: DraftLoader = default_draft_loader,

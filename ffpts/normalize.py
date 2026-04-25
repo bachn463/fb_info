@@ -74,6 +74,52 @@ PFR_FRANCHISE: dict[str, tuple[str, str]] = {
 }
 
 
+# nflverse / NFL data team-code -> stable franchise key. Different
+# convention from PFR's 3-letter URL slugs (e.g. "GB" instead of "gnb",
+# "NE" instead of "nwe"). Includes both the contemporary and modern
+# codes for the three relocations in the 1999+ window:
+#   STL (1999-2015) and LAR (2016+) -> rams
+#   SD  (1999-2016) and LAC (2017+) -> chargers
+#   OAK (1999-2019) and LV  (2020+) -> raiders
+NFL_TEAM_TO_FRANCHISE: dict[str, str] = {
+    "ARI": "cardinals",
+    "ATL": "falcons",
+    "BAL": "ravens",
+    "BUF": "bills",
+    "CAR": "panthers",
+    "CHI": "bears",
+    "CIN": "bengals",
+    "CLE": "browns",
+    "DAL": "cowboys",
+    "DEN": "broncos",
+    "DET": "lions",
+    "GB":  "packers",
+    "HOU": "texans",
+    "IND": "colts",
+    "JAX": "jaguars",
+    "KC":  "chiefs",
+    "LAC": "chargers",
+    "LAR": "rams",
+    "LV":  "raiders",
+    "MIA": "dolphins",
+    "MIN": "vikings",
+    "NE":  "patriots",
+    "NO":  "saints",
+    "NYG": "giants",
+    "NYJ": "jets",
+    "OAK": "raiders",
+    "PHI": "eagles",
+    "PIT": "steelers",
+    "SD":  "chargers",
+    "SEA": "seahawks",
+    "SF":  "49ers",
+    "STL": "rams",
+    "TB":  "buccaneers",
+    "TEN": "titans",
+    "WAS": "commanders",
+}
+
+
 def franchise_for_slug(slug: str) -> str | None:
     """Return the stable franchise key for a PFR URL slug, or None."""
     entry = PFR_FRANCHISE.get(slug.lower())
