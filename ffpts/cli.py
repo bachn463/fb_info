@@ -20,7 +20,7 @@ import typer
 
 from ffpts.db import DEFAULT_DB_PATH, init_db
 from ffpts.pipeline import build as run_build
-from ffpts.queries import flex_topN_by_draft_round, most_def_int_by_division
+from ffpts.queries import flex_topN_by_draft_round, most_def_int_by_division, pos_topN
 
 app = typer.Typer(
     add_completion=False,
@@ -136,6 +136,52 @@ def ask_div_int(
     """Top-N player-seasons by defensive INTs scoped to a division."""
     sql, params = most_def_int_by_division(
         division, start=start, end=end, n=n, division_mode=mode,  # type: ignore[arg-type]
+    )
+    con = _open_db(db)
+    try:
+        cur = con.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        _print_rows(cur.fetchall(), cols)
+    finally:
+        con.close()
+
+
+@ask_app.command("pos-top")
+def ask_pos_top(
+    position: str = typer.Option(
+        ..., "--position",
+        help='Position label ("QB", "RB", "WR", "TE", "CB", ...) or '
+             '"FLEX" (RB/WR/TE) or "ALL".',
+    ),
+    rank_by: str = typer.Option(
+        "fpts_ppr", "--rank-by",
+        help="Stat column to rank by. e.g. fpts_ppr, pass_yds, rec, "
+             "def_int, def_sacks, fg_made.",
+    ),
+    n: int = typer.Option(10, "--n", help="Number of player-seasons."),
+    start: int | None = typer.Option(None, "--start", help="First season (inclusive)."),
+    end: int | None = typer.Option(None, "--end", help="Last season (inclusive)."),
+    draft_rounds: str | None = typer.Option(
+        None, "--draft-rounds",
+        help='Comma-separated draft rounds, e.g. "4,5". Filters to '
+             "player-seasons whose draft pick was in any of these rounds.",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the DuckDB file."),
+) -> None:
+    """Top-N player-seasons at a position, ranked by a stat column."""
+    rounds_list: list[int] | None = None
+    if draft_rounds:
+        try:
+            rounds_list = [int(x.strip()) for x in draft_rounds.split(",") if x.strip()]
+        except ValueError:
+            typer.echo(
+                f"--draft-rounds must be a comma-separated list of ints, got {draft_rounds!r}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+    sql, params = pos_topN(
+        position, n=n, rank_by=rank_by,
+        start=start, end=end, draft_rounds=rounds_list,
     )
     con = _open_db(db)
     try:

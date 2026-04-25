@@ -136,3 +136,53 @@ def test_help_lists_all_commands():
     assert "build" in result.output
     assert "query" in result.output
     assert "ask" in result.output
+
+
+def test_ask_pos_top_runs_with_draft_rounds_filter(tmp_path):
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    # CMC was R1, so a rounds=4,5 filter should return zero rows for FLEX.
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "FLEX",
+            "--rank-by", "fpts_ppr",
+            "--draft-rounds", "4,5",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "(no rows)" in result.output
+
+
+def test_ask_pos_top_position_match(tmp_path):
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "RB",
+            "--rank-by", "fpts_ppr",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Christian McCaffrey" in result.output
+
+
+def test_ask_pos_top_rejects_malformed_draft_rounds(tmp_path):
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "QB",
+            "--draft-rounds", "abc",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "comma-separated list of ints" in result.output
