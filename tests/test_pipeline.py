@@ -198,6 +198,59 @@ def test_q2_motivating_query_finds_urlacher_in_nfc_north_2002(populated_db):
     assert rows == [("Brian Urlacher", 2002, "CHI", 1)]
 
 
+def test_pipeline_tolerates_null_player_display_name():
+    """Regression: nflverse rows with NULL player_display_name (and draft
+    rows with NULL pfr_player_name) used to crash the players upsert
+    because players.name is NOT NULL. The upsert now falls back to the
+    player_id when no name is available anywhere in the source."""
+
+    NAMELESS_2023 = {**CMC_2017,
+        "player_id": "00-9999999",
+        "player_display_name": None,
+        "season": 2023,
+        "recent_team": "SF",
+    }
+
+    def loader_with_null_name(seasons):
+        s = list(seasons)[0]
+        if s == 2023:
+            return pl.DataFrame([NAMELESS_2023])
+        return pl.DataFrame([{**CMC_2017, "season": s}])
+
+    def draft_with_null_name():
+        return pl.DataFrame([
+            {
+                "season": 2017, "round": 1, "pick": 8, "team": "CAR",
+                "gsis_id": "00-0033280", "pfr_player_id": "McCaCh01",
+                "pfr_player_name": "Christian McCaffrey", "position": "RB",
+            },
+            {
+                # Drafted player with NULL pfr_player_name.
+                "season": 2018, "round": 6, "pick": 200, "team": "ATL",
+                "gsis_id": "00-9999998", "pfr_player_id": None,
+                "pfr_player_name": None, "position": "WR",
+            },
+        ])
+
+    con = connect(None)
+    apply_schema(con)
+    try:
+        # No exception = pass.
+        build(seasons=[2023], con=con,
+              player_loader=loader_with_null_name,
+              draft_loader=draft_with_null_name)
+        # Both nameless players ended up with their player_id as the name.
+        rows = dict(con.execute(
+            "SELECT player_id, name FROM players WHERE name = player_id"
+        ).fetchall())
+        assert rows == {
+            "00-9999999": "00-9999999",
+            "00-9999998": "00-9999998",
+        }
+    finally:
+        con.close()
+
+
 def test_q1_motivating_query_finds_cmc_round_1(populated_db):
     """Q1 in plan: FLEX top-N by single-season fpts, drafted in given round.
 

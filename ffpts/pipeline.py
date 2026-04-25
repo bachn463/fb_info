@@ -37,12 +37,24 @@ _DRAFT_EXTRA_COLUMNS = {"name"}
 
 
 def _upsert_players_from(con: duckdb.DuckDBPyConnection, staging_view: str) -> None:
-    """Upsert (player_id, name) into players, widening first/last_season."""
+    """Upsert (player_id, name) into players, widening first/last_season.
+
+    nflverse occasionally has NULL ``player_display_name`` (some
+    preseason-only or ST-only roles, players who never registered a
+    regular-season game) — and ``pfr_player_name`` is sometimes NULL on
+    older draft rows. The players.name column is NOT NULL, so we pick
+    the first non-null name across the group, falling back to the
+    player_id itself when no name exists anywhere in the source. That
+    keeps the row addressable for joins instead of crashing the build.
+    """
     con.execute(
         f"""
         INSERT INTO players (player_id, name, first_season, last_season)
         SELECT player_id,
-               ANY_VALUE(name)  AS name,
+               COALESCE(
+                   MAX(name) FILTER (WHERE name IS NOT NULL),
+                   player_id
+               )                AS name,
                MIN(season)      AS first_season,
                MAX(season)      AS last_season
         FROM   {staging_view}
