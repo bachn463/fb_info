@@ -184,3 +184,57 @@ def load_player_seasons(
     """Top-level: fetch + transform. The default loader hits nflverse."""
     raw = loader(seasons)
     return transform_player_seasons(raw)
+
+
+# ---------------------------------------------------------------------------
+# Draft picks
+# ---------------------------------------------------------------------------
+
+DraftLoader = Callable[[], pl.DataFrame]
+
+
+def default_draft_loader() -> pl.DataFrame:
+    import nflreadpy as nfl
+
+    return nfl.load_draft_picks()
+
+
+def transform_draft_picks(raw: pl.DataFrame) -> pl.DataFrame:
+    """Map nflverse draft rows to our draft_picks schema.
+
+    Drops rows without a gsis_id (players who never registered an NFL
+    appearance — they can't join to player_season_stats anyway).
+    """
+    return (
+        raw
+        .filter(pl.col("gsis_id").is_not_null())
+        .select(
+            pl.col("gsis_id").alias("player_id"),
+            pl.col("season").cast(pl.Int64).alias("year"),
+            pl.col("round").cast(pl.Int64).alias("round"),
+            pl.col("pick").cast(pl.Int64).alias("overall_pick"),
+            pl.col("team"),
+            # Keep player_name for the players-table upsert in pipeline.
+            pl.col("pfr_player_name").alias("name"),
+        )
+        # Defensive: same gsis_id appearing twice would break the PK. Take
+        # the earliest (lowest season, then lowest pick) as the canonical
+        # draft entry.
+        .sort(["player_id", "year", "overall_pick"])
+        .unique(subset=["player_id"], keep="first")
+    )
+
+
+def load_draft_picks(
+    *,
+    loader: DraftLoader = default_draft_loader,
+    through_season: int | None = None,
+) -> pl.DataFrame:
+    """Fetch + transform. ``through_season`` filters to picks in or before
+    the given year, useful for keeping the table aligned with the seasons
+    range the pipeline is loading."""
+    raw = loader()
+    df = transform_draft_picks(raw)
+    if through_season is not None:
+        df = df.filter(pl.col("year") <= through_season)
+    return df
