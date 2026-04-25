@@ -251,6 +251,43 @@ def test_pipeline_tolerates_null_player_display_name():
         con.close()
 
 
+def test_pipeline_drops_player_season_rows_with_null_team():
+    """Regression: nflverse rows with recent_team=NULL used to crash
+    the player_season_stats insert (team is NOT NULL and part of the
+    PK). They should be silently dropped — they can't be addressed by
+    the (player_id, season, team) PK anyway."""
+
+    valid = {**CMC_2017, "season": 2023, "recent_team": "SF"}
+    null_team = {**CMC_2017,
+        "player_id": "00-9999997",
+        "player_display_name": "Phantom",
+        "season": 2023,
+        "recent_team": None,
+    }
+
+    def loader(seasons):
+        return pl.DataFrame([valid, null_team])
+
+    con = connect(None)
+    apply_schema(con)
+    try:
+        build(seasons=[2023], con=con,
+              player_loader=loader, draft_loader=fake_draft_loader)
+        # The valid row landed; the null-team row was dropped.
+        rows = con.execute(
+            "SELECT player_id FROM player_season_stats ORDER BY player_id"
+        ).fetchall()
+        assert rows == [("00-0033280",)]
+        # The phantom player still exists in `players` (they were upserted
+        # before the team filter), so they're addressable by future joins.
+        phantom = con.execute(
+            "SELECT name FROM players WHERE player_id = '00-9999997'"
+        ).fetchone()
+        assert phantom == ("Phantom",)
+    finally:
+        con.close()
+
+
 def test_q1_motivating_query_finds_cmc_round_1(populated_db):
     """Q1 in plan: FLEX top-N by single-season fpts, drafted in given round.
 

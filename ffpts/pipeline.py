@@ -97,8 +97,19 @@ def _replace_draft_picks(con: duckdb.DuckDBPyConnection, draft: pl.DataFrame) ->
 def _replace_player_season_stats(
     con: duckdb.DuckDBPyConnection, stats: pl.DataFrame, season: int
 ) -> None:
-    drop_cols = [c for c in stats.columns if c in _STATS_EXTRA_COLUMNS]
-    insertable = stats.drop(drop_cols) if drop_cols else stats
+    # PK is (player_id, season, team) — drop rows where any PK column
+    # is NULL. nflverse occasionally has NULL recent_team for rows that
+    # never registered a regular-season snap with a real team
+    # (preseason-only / ST-only / mid-camp roster moves). Those rows
+    # can't satisfy the PK anyway and shouldn't crash the build.
+    insertable = stats.filter(
+        pl.col("player_id").is_not_null()
+        & pl.col("season").is_not_null()
+        & pl.col("team").is_not_null()
+    )
+    drop_cols = [c for c in insertable.columns if c in _STATS_EXTRA_COLUMNS]
+    if drop_cols:
+        insertable = insertable.drop(drop_cols)
     con.register("staging_stats_full", stats)
     _upsert_players_from(con, "staging_stats_full")
     con.unregister("staging_stats_full")
