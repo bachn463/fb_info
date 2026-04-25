@@ -254,6 +254,91 @@ def test_pos_top_last_name_grep_finds_match(db):
     assert "Joey Lopez" not in names2
 
 
+def _seed_multi_season_player(db):
+    """Same player_id across three seasons; varying fpts and pass_yds."""
+    db.execute("INSERT INTO players (player_id, name) VALUES ('multi', 'Multi Year QB')")
+    db.execute(
+        "INSERT INTO draft_picks (player_id, year, round, overall_pick, team) "
+        "VALUES ('multi', 2018, 1, 10, 'GB')"
+    )
+    rows = [
+        # (season, team, fpts_ppr, pass_yds)
+        (2019, "GB", 250.0, 3500),  # mediocre
+        (2020, "GB", 380.0, 4500),  # best PPR + best pass_yds
+        (2021, "GB", 320.0, 4200),  # good but not best
+    ]
+    for season, team, ppr, py in rows:
+        db.execute(
+            "INSERT INTO player_season_stats "
+            "(player_id, season, team, position, pass_yds, fpts_ppr) "
+            "VALUES ('multi', ?, ?, 'QB', ?, ?)",
+            [season, team, py, ppr],
+        )
+
+
+def test_unique_collapses_to_best_season_per_player(db):
+    _seed(db)
+    _seed_multi_season_player(db)
+    sql, params = pos_topN("QB", n=10, rank_by="fpts_ppr", unique=True)
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    # Multi Year QB appears once.
+    assert names.count("Multi Year QB") == 1
+    # And the row that survived is their 2020 season (best PPR = 380).
+    multi_row = next(r for r in rows if r[0] == "Multi Year QB")
+    season = multi_row[2]
+    rank_value = multi_row[4]
+    assert season == 2020
+    assert rank_value == 380.0
+
+
+def test_unique_picks_different_season_for_different_rank_by(db):
+    _seed_multi_season_player(db)
+    # Multi Year QB's seasons: 2019(3500), 2020(4500), 2021(4200) pass_yds.
+    # 2020 wins for pass_yds *and* fpts_ppr in this fixture, but verify
+    # the SQL actually evaluates ROW_NUMBER over the chosen rank_by:
+    sql, params = pos_topN("QB", n=10, rank_by="pass_yds", unique=True)
+    row = db.execute(sql, params).fetchone()
+    assert row[0] == "Multi Year QB"
+    assert row[2] == 2020
+    assert row[4] == 4500
+
+
+def test_unique_respects_year_range_when_picking_best_season(db):
+    _seed_multi_season_player(db)
+    # Constrain to 2019-2019 — the only Multi Year QB season in range
+    # is 2019 with 250 PPR.
+    sql, params = pos_topN(
+        "QB", n=10, rank_by="fpts_ppr",
+        start=2019, end=2019, unique=True,
+    )
+    rows = db.execute(sql, params).fetchall()
+    multi = next(r for r in rows if r[0] == "Multi Year QB")
+    assert multi[2] == 2019
+    assert multi[4] == 250.0
+
+
+def test_unique_combines_with_other_filters(db):
+    _seed_multi_season_player(db)
+    sql, params = pos_topN(
+        "QB", n=10, rank_by="pass_yds", team="GB", unique=True
+    )
+    rows = db.execute(sql, params).fetchall()
+    # Only one row, the 2020 season.
+    assert len(rows) == 1
+    assert rows[0][0] == "Multi Year QB"
+    assert rows[0][2] == 2020
+
+
+def test_unique_default_false_preserves_player_season_behavior(db):
+    _seed_multi_season_player(db)
+    sql, params = pos_topN("QB", n=10, rank_by="fpts_ppr")  # unique unspecified
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    # Three player-seasons for Multi Year QB still appear.
+    assert names.count("Multi Year QB") == 3
+
+
 def test_pos_top_combined_filters(db):
     _seed(db)
     # FLEX (RB/WR/TE) on DAL in 2023, ranked by PPR — expect just Top WR.

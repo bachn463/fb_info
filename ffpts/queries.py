@@ -172,6 +172,7 @@ def pos_topN(
     conference: str | None = None,
     first_name_contains: str | None = None,
     last_name_contains: str | None = None,
+    unique: bool = False,
 ) -> tuple[str, list]:
     """Top-N player-seasons at a given position, ranked by ``rank_by``.
 
@@ -200,10 +201,16 @@ def pos_topN(
       whitespace in the player's display name). Both can be combined
       with each other and with everything else.
 
+    ``unique``: when True, collapse to one row per player — their best
+    season as ranked by ``rank_by`` (within the active filters). Ties
+    on the rank value resolve to the earlier season. The default
+    (False) preserves the player-season behavior.
+
     Returns rows of (name, team, season, position, rank_value,
     draft_round, draft_year, draft_overall_pick) ordered by rank_by
     desc then season asc. Player-season default — same player can
-    appear multiple times for different qualifying years.
+    appear multiple times for different qualifying years (unless
+    ``unique=True``).
     """
     if rank_by not in RANK_BY_ALLOWED:
         raise ValueError(
@@ -259,19 +266,47 @@ def pos_topN(
         params.append(f"%{last_name_contains}%")
 
     where_sql = " AND ".join(where_clauses)
-    sql = f"""
-        SELECT name,
-               team,
-               season,
-               position,
-               {rank_by} AS rank_value,
-               draft_round,
-               draft_year,
-               draft_overall_pick
-        FROM   v_player_season_full
-        WHERE  {where_sql}
-        ORDER BY {rank_by} DESC, season ASC
-        LIMIT  ?
-    """
+    if unique:
+        # Pick the best season per player_id (inside the same filter
+        # set), then rank that one row per player against the others.
+        sql = f"""
+            WITH ranked AS (
+                SELECT name,
+                       team,
+                       season,
+                       position,
+                       {rank_by} AS rank_value,
+                       draft_round,
+                       draft_year,
+                       draft_overall_pick,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY player_id
+                           ORDER BY {rank_by} DESC, season ASC
+                       ) AS __rn
+                FROM   v_player_season_full
+                WHERE  {where_sql}
+            )
+            SELECT name, team, season, position, rank_value,
+                   draft_round, draft_year, draft_overall_pick
+            FROM   ranked
+            WHERE  __rn = 1
+            ORDER BY rank_value DESC, season ASC
+            LIMIT  ?
+        """
+    else:
+        sql = f"""
+            SELECT name,
+                   team,
+                   season,
+                   position,
+                   {rank_by} AS rank_value,
+                   draft_round,
+                   draft_year,
+                   draft_overall_pick
+            FROM   v_player_season_full
+            WHERE  {where_sql}
+            ORDER BY {rank_by} DESC, season ASC
+            LIMIT  ?
+        """
     params.append(n)
     return sql, params

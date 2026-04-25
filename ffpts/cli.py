@@ -186,6 +186,12 @@ def ask_pos_top(
         help="Case-insensitive substring match on last name (everything "
              'after the first space in the display name).',
     ),
+    unique: bool = typer.Option(
+        False, "--unique/--no-unique",
+        help="One row per player — their best season as ranked by "
+             "--rank-by (within the active filters). Ties on the rank "
+             "value resolve to the earlier season.",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the DuckDB file."),
 ) -> None:
     """Top-N player-seasons at a position, ranked by a stat column.
@@ -214,6 +220,7 @@ def ask_pos_top(
         team=team, division=division, conference=conference,
         first_name_contains=first_name_contains,
         last_name_contains=last_name_contains,
+        unique=unique,
     )
     con = _open_db(db)
     try:

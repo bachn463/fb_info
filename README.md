@@ -31,6 +31,8 @@ ffpts ask pos-top  --position WR --rank-by rec_yds  --team SF
 ffpts ask pos-top  --position ALL --rank-by def_int --division "NFC North"
 ffpts ask pos-top  --position ALL --first-name-contains z --rank-by fpts_ppr
 ffpts ask pos-top  --position ALL --last-name-contains  z --rank-by fpts_ppr
+ffpts ask pos-top  --position QB --rank-by pass_yds --unique --n 10
+#                                                    ^ best single season per player
 
 # Or any raw SQL:
 ffpts query "SELECT name, fpts_ppr FROM v_player_season_full
