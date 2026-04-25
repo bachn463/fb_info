@@ -1,5 +1,11 @@
 """HTTP client for Pro Football Reference with on-disk cache and throttle.
 
+DORMANT MODULE. The project pivoted to nflverse (see ffpts.ingest)
+after discovering PFR sits behind Cloudflare Turnstile that blocks
+all programmatic clients. This module is preserved as ready-to-use
+infrastructure if a future PFR backfill (1970-1998) ever becomes
+feasible — nothing in the active pipeline imports it.
+
 Single entry point: ``Scraper.get(path)`` returns HTML for a PFR path.
 Cache hits are free; cache misses sleep at least ``min_interval`` seconds
 since the last live fetch and retry 429 / 5xx with exponential backoff.
@@ -9,11 +15,6 @@ for ``/years/2023/passing.htm`` lands at
 ``data/cache/years/2023/passing.htm``. A full re-parse never re-fetches:
 the cache is the primary defense against PFR rate limits and the only
 sane way to iterate on parsing logic.
-
-The default user agent identifies the project and a contact address;
-PFR's published guidance asks scrapers to be polite, identify
-themselves, and back off on errors. ``min_interval=5.0`` is a
-conservative floor.
 """
 
 from __future__ import annotations
