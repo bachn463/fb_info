@@ -407,6 +407,92 @@ def test_q2_mixed_source_nfc_central_returns_pre_1999_rows():
         con.close()
 
 
+def test_pre_1999_nflverse_draft_picks_land_when_only_nflverse_years():
+    """Regression: Peyton Manning was drafted 1998 R1 P1 (pre-1999).
+    A nflverse-only build for 1999+ used to filter out his draft
+    entry, so his 1999+ stats rows showed as 'undrafted' via the
+    LEFT JOIN. nflverse's full draft history (1936+) now flows in
+    regardless of the requested season range."""
+
+    def loader_with_pre_1999_drafts():
+        return pl.DataFrame([
+            {  # Peyton Manning, 1998 R1 P1 by IND
+                "season": 1998, "round": 1, "pick": 1, "team": "IND",
+                "gsis_id": "00-0010346", "pfr_player_id": "MannPe00",
+                "pfr_player_name": "Peyton Manning", "position": "QB",
+            },
+            {  # Marshall Faulk, 1994 R1 P2 by IND
+                "season": 1994, "round": 1, "pick": 2, "team": "IND",
+                "gsis_id": "00-0001234", "pfr_player_id": "FaulMa00",
+                "pfr_player_name": "Marshall Faulk", "position": "RB",
+            },
+            {  # CMC, 2017 R1 P8 by CAR (post-NFLVERSE_MIN_YEAR sanity)
+                "season": 2017, "round": 1, "pick": 8, "team": "CAR",
+                "gsis_id": "00-0033280", "pfr_player_id": "McCaCh01",
+                "pfr_player_name": "Christian McCaffrey", "position": "RB",
+            },
+        ])
+
+    con = connect(None)
+    apply_schema(con)
+    try:
+        # Build with only nflverse years — no PFR scraper passed because
+        # no pre-1999 seasons are in the requested range.
+        build(
+            seasons=[2017],
+            con=con,
+            player_loader=fake_player_stats_loader,
+            draft_loader=loader_with_pre_1999_drafts,
+        )
+        # All three drafts should be present.
+        rows = dict(con.execute(
+            "SELECT player_id, year FROM draft_picks ORDER BY year"
+        ).fetchall())
+        assert "00-0001234" in rows  # Faulk 1994
+        assert rows["00-0001234"] == 1994
+        assert "00-0010346" in rows  # Manning 1998
+        assert rows["00-0010346"] == 1998
+        assert "00-0033280" in rows  # CMC 2017
+        assert rows["00-0033280"] == 2017
+    finally:
+        con.close()
+
+
+def test_namespaced_draft_replacement_does_not_clobber_other_namespace():
+    """Re-running the nflverse side should not delete pfr:-keyed
+    draft rows that a previous PFR-side run inserted."""
+    con = connect(None)
+    apply_schema(con)
+    try:
+        # First build: PFR side populates pfr:-namespace; nflverse
+        # side populates GSIS namespace.
+        build(
+            seasons=[1985, 2017],
+            con=con,
+            player_loader=fake_player_stats_loader,
+            draft_loader=fake_draft_loader,
+            pfr_scraper=_fixture_scraper(),
+        )
+        pfr_count_before = con.execute(
+            "SELECT COUNT(*) FROM draft_picks WHERE player_id LIKE 'pfr:%'"
+        ).fetchone()[0]
+        assert pfr_count_before > 0
+
+        # Second build: nflverse-only run. Should not touch pfr: rows.
+        build(
+            seasons=[2017],
+            con=con,
+            player_loader=fake_player_stats_loader,
+            draft_loader=fake_draft_loader,
+        )
+        pfr_count_after = con.execute(
+            "SELECT COUNT(*) FROM draft_picks WHERE player_id LIKE 'pfr:%'"
+        ).fetchone()[0]
+        assert pfr_count_after == pfr_count_before
+    finally:
+        con.close()
+
+
 def test_pipeline_attaches_team_records_from_standings():
     """Standings parser feeds W/L into team_seasons; verify they land."""
     con = connect(None)

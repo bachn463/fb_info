@@ -78,24 +78,26 @@ def _replace_team_seasons(
     con.unregister("staging_ts")
 
 
-def _replace_draft_picks_in_range(
+def _replace_draft_picks_namespaced(
     con: duckdb.DuckDBPyConnection,
     draft: pl.DataFrame,
-    start: int,
-    end: int,
+    *,
+    scope_sql: str,
+    scope_params: list,
 ) -> None:
-    """Replace draft_picks rows for years in ``[start, end]``.
+    """Replace draft_picks rows that match a namespace+range scope.
 
-    Range-scoped (rather than full-table) so the two data sources can
-    coexist: PFR pre-1999 and nflverse 1999+ each replace their own
-    window without clobbering the other.
+    PFR rows live in the ``pfr:<slug>`` player_id namespace; nflverse
+    rows live in the GSIS namespace ("00-0033280"). They never
+    collide on the PK, so each source replaces only its own
+    namespace and they coexist. ``scope_sql`` and ``scope_params``
+    define the DELETE clause (e.g. ``player_id LIKE 'pfr:%' AND year
+    BETWEEN ? AND ?`` or ``player_id NOT LIKE 'pfr:%'``).
     """
     if draft.is_empty():
-        # Nothing to insert; still scrub the range so a re-run with no
-        # data clears prior rows.
-        con.execute(
-            "DELETE FROM draft_picks WHERE year BETWEEN ? AND ?", [start, end]
-        )
+        # Nothing to insert; still scrub the scope so a re-run with no
+        # data clears prior rows in that namespace.
+        con.execute(f"DELETE FROM draft_picks WHERE {scope_sql}", scope_params)
         return
     drop_cols = [c for c in draft.columns if c in _DRAFT_EXTRA_COLUMNS]
     insertable = draft.drop(drop_cols) if drop_cols else draft
@@ -105,9 +107,7 @@ def _replace_draft_picks_in_range(
         "(SELECT player_id, name, year AS season FROM staging_draft_full)",
     )
     con.unregister("staging_draft_full")
-    con.execute(
-        "DELETE FROM draft_picks WHERE year BETWEEN ? AND ?", [start, end]
-    )
+    con.execute(f"DELETE FROM draft_picks WHERE {scope_sql}", scope_params)
     con.register("staging_draft", insertable)
     con.execute("INSERT INTO draft_picks BY NAME SELECT * FROM staging_draft")
     con.unregister("staging_draft")
@@ -218,8 +218,10 @@ def build(
             pfr_drafts = ingest_pfr.load_draft_picks(
                 pfr_years, scraper=pfr_scraper
             )
-            _replace_draft_picks_in_range(
-                con, pfr_drafts, pfr_years[0], pfr_years[-1]
+            _replace_draft_picks_namespaced(
+                con, pfr_drafts,
+                scope_sql="player_id LIKE 'pfr:%' AND year BETWEEN ? AND ?",
+                scope_params=[pfr_years[0], pfr_years[-1]],
             )
             pfr_draft_count = pfr_drafts.height
 
@@ -239,15 +241,19 @@ def build(
         # ---- nflverse side (1999+) ---------------------------------------
         nfl_draft_count = 0
         if nfl_years:
+            # nflverse's draft data goes back to 1936; load it all,
+            # not just the requested year range. A 1999+ stats row for
+            # Peyton Manning needs his 1998 draft entry to join, even
+            # though 1998 is pre-NFLVERSE_MIN_YEAR. PFR-source drafts
+            # use the pfr:<slug> namespace and don't collide with the
+            # GSIS-keyed nflverse rows on the PK.
             nfl_drafts = load_draft_picks(
                 loader=draft_loader, through_season=nfl_years[-1]
             )
-            # Restrict to the nfl-side window so we don't clobber any
-            # pre-1999 PFR draft rows (nflverse's draft data goes back
-            # to the 1930s).
-            nfl_drafts = nfl_drafts.filter(pl.col("year") >= NFLVERSE_MIN_YEAR)
-            _replace_draft_picks_in_range(
-                con, nfl_drafts, NFLVERSE_MIN_YEAR, nfl_years[-1]
+            _replace_draft_picks_namespaced(
+                con, nfl_drafts,
+                scope_sql="player_id NOT LIKE 'pfr:%'",
+                scope_params=[],
             )
             nfl_draft_count = nfl_drafts.height
 
