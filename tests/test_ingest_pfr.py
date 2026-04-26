@@ -166,3 +166,53 @@ def test_load_team_season_records_returns_28_for_1985(scraper):
     bears = df.filter(df["franchise"] == "bears").to_dicts()[0]
     assert bears["wins"] == 15
     assert bears["losses"] == 1
+
+
+def test_load_draft_picks_dedups_player_drafted_twice():
+    """Bo Jackson was drafted by TB in 1986 (didn't sign) and OAK in
+    1987 (signed). Same PFR slug, two draft rows. The draft_picks PK
+    is player_id, so the loader must keep one — by convention, the
+    earliest (year, overall_pick)."""
+    # Synthetic fixture: a tiny HTML page per year with one draft pick.
+    PAGES = {
+        "/years/1986/draft.htm": """
+        <table id="drafts"><tbody>
+          <tr>
+            <td data-stat="draft_round">1</td>
+            <td data-stat="draft_pick">1</td>
+            <td data-stat="team">TAM</td>
+            <td data-stat="player">
+              <a href="/players/J/JackBo00.htm">Bo Jackson</a>
+            </td>
+            <td data-stat="pos">RB</td>
+          </tr>
+        </tbody></table>
+        """,
+        "/years/1987/draft.htm": """
+        <table id="drafts"><tbody>
+          <tr>
+            <td data-stat="draft_round">7</td>
+            <td data-stat="draft_pick">183</td>
+            <td data-stat="team">RAI</td>
+            <td data-stat="player">
+              <a href="/players/J/JackBo00.htm">Bo Jackson</a>
+            </td>
+            <td data-stat="pos">RB</td>
+          </tr>
+        </tbody></table>
+        """,
+    }
+
+    class _DupeScraper:
+        def get(self, path: str) -> str:
+            return PAGES[path]
+
+    df = load_draft_picks([1986, 1987], scraper=_DupeScraper())
+    # One row, the earliest draft.
+    assert df.height == 1
+    row = df.to_dicts()[0]
+    assert row["player_id"] == "pfr:JackBo00"
+    assert row["year"] == 1986
+    assert row["round"] == 1
+    assert row["overall_pick"] == 1
+    assert row["team"] == "TAM"

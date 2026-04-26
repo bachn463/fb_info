@@ -160,12 +160,25 @@ def load_draft_picks(
     Output schema columns: player_id, name, year, round, overall_pick,
     team. ``name`` and ``position`` flow through for the players-table
     upsert downstream.
+
+    Deduplicates by player_id — a player who entered the draft more
+    than once (e.g. Bo Jackson: TB 1986 didn't sign, then OAK 1987)
+    appears in multiple year fixtures with the same PFR slug. The
+    draft_picks PK is player_id, so we keep the earliest (year,
+    overall_pick) entry as the canonical draft. Matches the nflverse
+    path's convention.
     """
     rows: list[dict] = []
     for season in seasons:
         html = scraper.get(f"/years/{season}/draft.htm")
         rows.extend(parse_draft(html, season))
-    return pl.DataFrame(rows)
+    if not rows:
+        return pl.DataFrame(rows)
+    df = pl.DataFrame(rows)
+    return (
+        df.sort(["player_id", "year", "overall_pick"])
+          .unique(subset=["player_id"], keep="first")
+    )
 
 
 # ---------------------------------------------------------------------------
