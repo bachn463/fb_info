@@ -232,134 +232,288 @@ def transform_draft_picks(raw: pl.DataFrame) -> pl.DataFrame:
 # nflverse exposes team metadata only for the *current* configuration —
 # load_teams() returns one row per franchise with its current division.
 # We need the per-season division because realignment matters for
-# queries like "NFC North 1999-2005" (which spans the 2002 realignment).
+# queries like "NFC North 1990-2005" (which spans the 2002 realignment).
 #
-# Hand-encoded eras below cover the 1999+ scope (where nflverse data is
-# reliable). Each era is a (start, end_inclusive, divisions) triple
-# where ``divisions`` maps (conference, division_name) to the team-code
-# list active that era. The ranges encode every realignment in our
-# window:
+# Each era's team list is a list of ``(team_code, franchise_key)`` tuples
+# rather than bare team codes. Reason: some team codes mean different
+# franchises in different eras —
 #
-#   1999-2001:  pre-2002 layout (6 divisions; AFC Central exists,
-#               Seattle in AFC West, no Houston Texans, Rams=STL,
-#               Chargers=SD, Raiders=OAK).
-#   2002-2015:  8-division realignment + Houston Texans expansion;
+#   * "STL" = St. Louis Cardinals (1970-1987)  AND  St. Louis Rams (1995-2015)
+#   * "BAL" = Baltimore Colts    (1970-1983)   AND  Baltimore Ravens (1996+)
+#   * "HOU" = Houston Oilers     (1970-1996)   AND  Houston Texans (2002+)
+#
+# A flat team-code -> franchise lookup can't represent that. Embedding
+# the franchise alongside each team in the era band makes the right
+# answer fall out of "which era did this season belong to?".
+#
+# Eras encode every realignment 1970-present:
+#
+#   1970        Boston Patriots, Baltimore Colts, original 26-team setup.
+#   1971-1975   Boston -> New England Patriots rename.
+#   1976        TB joins AFC West, SEA joins NFC West (one-year swap).
+#   1977-1981   SEA permanently AFC West, TB permanently NFC Central.
+#   1982-1983   LA Raiders move (OAK -> RAI).
+#   1984-1987   Colts move BAL -> IND.
+#   1988-1993   Cardinals move STL -> PHO.
+#   1994        Cardinals rename PHO -> ARI.
+#   1995        Carolina + Jacksonville expansion, Rams LA -> STL,
+#               Raiders LA -> OAK.
+#   1996        CLE Browns suspended, Ravens new in BAL.
+#   1997-1998   Oilers HOU -> OTI (Tennessee).
+#   1999-2001   CLE Browns return, Tennessee Titans (TEN).
+#   2002-2015   8-division realignment + Houston Texans expansion;
 #               Seattle moves to NFC West.
-#   2016:       Rams move STL -> LAR.
-#   2017-2019:  Chargers move SD -> LAC.
-#   2020-:      Raiders move OAK -> LV.
+#   2016        Rams move STL -> LAR.
+#   2017-2019   Chargers move SD -> LAC.
+#   2020+       Raiders move OAK -> LV.
 
-_AFC_EAST_BUF_MIA_NE_NYJ = ["BUF", "MIA", "NE", "NYJ"]
-_AFC_NORTH_BAL_CIN_CLE_PIT = ["BAL", "CIN", "CLE", "PIT"]
-_AFC_SOUTH = ["HOU", "IND", "JAX", "TEN"]
-_NFC_EAST = ["DAL", "NYG", "PHI", "WAS"]
-_NFC_NORTH = ["CHI", "DET", "GB", "MIN"]
-_NFC_SOUTH = ["ATL", "CAR", "NO", "TB"]
+# Stable ``(team_code, franchise)`` constants for the modern era. Used in
+# multiple eras unchanged.
+_BUF = ("BUF", "bills")
+_MIA = ("MIA", "dolphins")
+_NWE_M = ("NE", "patriots")        # nflverse 2-letter
+_NYJ = ("NYJ", "jets")
+_BAL_RAVENS = ("BAL", "ravens")
+_CIN = ("CIN", "bengals")
+_CLE = ("CLE", "browns")
+_PIT = ("PIT", "steelers")
+_HOU_TEXANS = ("HOU", "texans")
+_IND = ("IND", "colts")
+_JAX = ("JAX", "jaguars")
+_TEN = ("TEN", "titans")
+_DEN = ("DEN", "broncos")
+_KC_M = ("KC", "chiefs")           # nflverse 2-letter
+_DAL = ("DAL", "cowboys")
+_NYG = ("NYG", "giants")
+_PHI = ("PHI", "eagles")
+_WAS = ("WAS", "commanders")
+_CHI = ("CHI", "bears")
+_DET = ("DET", "lions")
+_GB_M = ("GB", "packers")          # nflverse 2-letter
+_MIN = ("MIN", "vikings")
+_ATL = ("ATL", "falcons")
+_CAR = ("CAR", "panthers")
+_NO_M = ("NO", "saints")           # nflverse 2-letter
+_TB_M = ("TB", "buccaneers")       # nflverse 2-letter
+_SEA = ("SEA", "seahawks")
+_SF_M = ("SF", "49ers")            # nflverse 2-letter
+_ARI = ("ARI", "cardinals")
+
+# Pre-1999 PFR display codes that differ from nflverse's. PFR uses
+# 3-letter codes (NWE, KAN, GNB, NOR, SFO, TAM, SDG) where nflverse
+# uses 2-letter (NE, KC, GB, NO, SF, TB, SD).
+_NWE_P = ("NWE", "patriots")
+_KAN = ("KAN", "chiefs")
+_GNB = ("GNB", "packers")
+_NOR = ("NOR", "saints")
+_SFO = ("SFO", "49ers")
+_TAM = ("TAM", "buccaneers")
+_SDG = ("SDG", "chargers")
+
+# Time-ambiguous codes — same letters, different franchise per era.
+_BAL_COLTS = ("BAL", "colts")            # 1970-1983
+_BOS_PATRIOTS = ("BOS", "patriots")      # 1970 only
+_HOU_OILERS = ("HOU", "titans")          # 1970-1996, same franchise as TEN
+_OTI = ("OTI", "titans")                 # 1997-1998 Tennessee Oilers
+_PHO = ("PHO", "cardinals")              # 1988-1993
+_STL_CARDS = ("STL", "cardinals")        # 1970-1987
+_STL_RAMS = ("STL", "rams")              # 1995-2015
+_RAM = ("RAM", "rams")                   # 1970-1981 LA Rams (PFR display)
+_RAI = ("RAI", "raiders")                # 1982-1994 LA Raiders (PFR display)
+_OAK = ("OAK", "raiders")                # 1970-1981 + 1995-2019
+_LV = ("LV", "raiders")
+_LAR = ("LAR", "rams")
+_LAC = ("LAC", "chargers")
+_SD_M = ("SD", "chargers")               # 1999-2016 (nflverse)
 
 
-_ERAS: list[tuple[int, int, dict[tuple[str, str], list[str]]]] = [
-    # 1999-2001: pre-realignment, 6 divisions, no Houston yet.
-    (
-        1999, 2001,
-        {
-            ("AFC", "AFC East"):    ["BUF", "IND", "MIA", "NE", "NYJ"],
-            ("AFC", "AFC Central"): ["BAL", "CIN", "CLE", "JAX", "PIT", "TEN"],
-            ("AFC", "AFC West"):    ["DEN", "KC", "OAK", "SD", "SEA"],
-            ("NFC", "NFC East"):    ["ARI", "DAL", "NYG", "PHI", "WAS"],
-            ("NFC", "NFC Central"): ["CHI", "DET", "GB", "MIN", "TB"],
-            ("NFC", "NFC West"):    ["ATL", "CAR", "NO", "SF", "STL"],
-        },
-    ),
-    # 2002-2015: 8 divisions; Texans expansion; Rams=STL, Chargers=SD,
-    # Raiders=OAK.
-    (
-        2002, 2015,
-        {
-            ("AFC", "AFC East"):  _AFC_EAST_BUF_MIA_NE_NYJ,
-            ("AFC", "AFC North"): _AFC_NORTH_BAL_CIN_CLE_PIT,
-            ("AFC", "AFC South"): _AFC_SOUTH,
-            ("AFC", "AFC West"):  ["DEN", "KC", "OAK", "SD"],
-            ("NFC", "NFC East"):  _NFC_EAST,
-            ("NFC", "NFC North"): _NFC_NORTH,
-            ("NFC", "NFC South"): _NFC_SOUTH,
-            ("NFC", "NFC West"):  ["ARI", "SEA", "SF", "STL"],
-        },
-    ),
-    # 2016: Rams move STL -> LAR.
-    (
-        2016, 2016,
-        {
-            ("AFC", "AFC East"):  _AFC_EAST_BUF_MIA_NE_NYJ,
-            ("AFC", "AFC North"): _AFC_NORTH_BAL_CIN_CLE_PIT,
-            ("AFC", "AFC South"): _AFC_SOUTH,
-            ("AFC", "AFC West"):  ["DEN", "KC", "OAK", "SD"],
-            ("NFC", "NFC East"):  _NFC_EAST,
-            ("NFC", "NFC North"): _NFC_NORTH,
-            ("NFC", "NFC South"): _NFC_SOUTH,
-            ("NFC", "NFC West"):  ["ARI", "SEA", "SF", "LAR"],
-        },
-    ),
-    # 2017-2019: Chargers move SD -> LAC.
-    (
-        2017, 2019,
-        {
-            ("AFC", "AFC East"):  _AFC_EAST_BUF_MIA_NE_NYJ,
-            ("AFC", "AFC North"): _AFC_NORTH_BAL_CIN_CLE_PIT,
-            ("AFC", "AFC South"): _AFC_SOUTH,
-            ("AFC", "AFC West"):  ["DEN", "KC", "OAK", "LAC"],
-            ("NFC", "NFC East"):  _NFC_EAST,
-            ("NFC", "NFC North"): _NFC_NORTH,
-            ("NFC", "NFC South"): _NFC_SOUTH,
-            ("NFC", "NFC West"):  ["ARI", "SEA", "SF", "LAR"],
-        },
-    ),
-    # 2020+: Raiders move OAK -> LV.
-    (
-        2020, 2099,
-        {
-            ("AFC", "AFC East"):  _AFC_EAST_BUF_MIA_NE_NYJ,
-            ("AFC", "AFC North"): _AFC_NORTH_BAL_CIN_CLE_PIT,
-            ("AFC", "AFC South"): _AFC_SOUTH,
-            ("AFC", "AFC West"):  ["DEN", "KC", "LV", "LAC"],
-            ("NFC", "NFC East"):  _NFC_EAST,
-            ("NFC", "NFC North"): _NFC_NORTH,
-            ("NFC", "NFC South"): _NFC_SOUTH,
-            ("NFC", "NFC West"):  ["ARI", "SEA", "SF", "LAR"],
-        },
-    ),
+_ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
+    # 1970 only — 26 teams, BOS Patriots (renamed 1971), no TB/SEA.
+    (1970, 1970, {
+        ("AFC", "AFC East"):    [_BAL_COLTS, _BOS_PATRIOTS, _BUF, _MIA, _NYJ],
+        ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG],
+        ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN],
+        ("NFC", "NFC West"):    [_ATL, _NOR, _RAM, _SFO],
+    }),
+    # 1971-1975 — Patriots renamed BOS->NWE.
+    (1971, 1975, {
+        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG],
+        ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN],
+        ("NFC", "NFC West"):    [_ATL, _NOR, _RAM, _SFO],
+    }),
+    # 1976 only — TB joins AFC West, SEA joins NFC West (rotates next year).
+    (1976, 1976, {
+        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _TAM],
+        ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN],
+        ("NFC", "NFC West"):    [_ATL, _NOR, _RAM, _SEA, _SFO],
+    }),
+    # 1977-1981 — SEA AFC West, TB NFC Central, OAK Raiders still in OAK.
+    (1977, 1981, {
+        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _SEA],
+        ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN, _TAM],
+        ("NFC", "NFC West"):    [_ATL, _NOR, _RAM, _SFO],
+    }),
+    # 1982-1983 — Raiders move to LA (RAI). Colts still in BAL.
+    (1982, 1983, {
+        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _RAI, _SDG, _SEA],
+        ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN, _TAM],
+        ("NFC", "NFC West"):    [_ATL, _NOR, _RAM, _SFO],
+    }),
+    # 1984-1987 — Colts move BAL->IND. Cardinals still in STL.
+    (1984, 1987, {
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _RAI, _SDG, _SEA],
+        ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN, _TAM],
+        ("NFC", "NFC West"):    [_ATL, _NOR, _RAM, _SFO],
+    }),
+    # 1988-1993 — Cardinals move STL->PHO.
+    (1988, 1993, {
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _RAI, _SDG, _SEA],
+        ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _PHO, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN, _TAM],
+        ("NFC", "NFC West"):    [_ATL, _NOR, _RAM, _SFO],
+    }),
+    # 1994 — Cardinals rename PHO->ARI. Last year of LA Rams + LA Raiders.
+    (1994, 1994, {
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _RAI, _SDG, _SEA],
+        ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN, _TAM],
+        ("NFC", "NFC West"):    [_ATL, _NOR, _RAM, _SFO],
+    }),
+    # 1995 — CAR + JAX expansion. Rams LA->STL. Raiders LA->OAK. CLE still
+    # in Cleveland (last year before suspension).
+    (1995, 1995, {
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, ("JAX", "jaguars"), _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _SEA],
+        ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN, _TAM],
+        ("NFC", "NFC West"):    [_ATL, ("CAR", "panthers"), _NOR, _SFO, _STL_RAMS],
+    }),
+    # 1996 — CLE Browns suspended, Ravens new in BAL.
+    (1996, 1996, {
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_BAL_RAVENS, _CIN, _HOU_OILERS, ("JAX", "jaguars"), _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _SEA],
+        ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN, _TAM],
+        ("NFC", "NFC West"):    [_ATL, ("CAR", "panthers"), _NOR, _SFO, _STL_RAMS],
+    }),
+    # 1997-1998 — Oilers HOU->OTI (Tennessee Oilers).
+    (1997, 1998, {
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC Central"): [_BAL_RAVENS, _CIN, ("JAX", "jaguars"), _OTI, _PIT],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _SEA],
+        ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN, _TAM],
+        ("NFC", "NFC West"):    [_ATL, ("CAR", "panthers"), _NOR, _SFO, _STL_RAMS],
+    }),
+    # 1999-2001 — CLE Browns return, Tennessee Titans (TEN). Switches to
+    # nflverse-style 2-letter codes (KC, GB, NO, SF, TB, NE) since
+    # nflverse is the data source from here on.
+    (1999, 2001, {
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC Central"): [_BAL_RAVENS, _CIN, _CLE, _JAX, _PIT, _TEN],
+        ("AFC", "AFC West"):    [_DEN, _KC_M, _OAK, _SD_M, _SEA],
+        ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GB_M, _MIN, _TB_M],
+        ("NFC", "NFC West"):    [_ATL, _CAR, _NO_M, _SF_M, _STL_RAMS],
+    }),
+    # 2002-2015 — 8 divisions, HOU Texans expansion, SEA -> NFC West.
+    (2002, 2015, {
+        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC North"): [_BAL_RAVENS, _CIN, _CLE, _PIT],
+        ("AFC", "AFC South"): [_HOU_TEXANS, _IND, _JAX, _TEN],
+        ("AFC", "AFC West"):  [_DEN, _KC_M, _OAK, _SD_M],
+        ("NFC", "NFC East"):  [_DAL, _NYG, _PHI, _WAS],
+        ("NFC", "NFC North"): [_CHI, _DET, _GB_M, _MIN],
+        ("NFC", "NFC South"): [_ATL, _CAR, _NO_M, _TB_M],
+        ("NFC", "NFC West"):  [_ARI, _SEA, _SF_M, _STL_RAMS],
+    }),
+    # 2016 — Rams STL -> LAR.
+    (2016, 2016, {
+        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC North"): [_BAL_RAVENS, _CIN, _CLE, _PIT],
+        ("AFC", "AFC South"): [_HOU_TEXANS, _IND, _JAX, _TEN],
+        ("AFC", "AFC West"):  [_DEN, _KC_M, _OAK, _SD_M],
+        ("NFC", "NFC East"):  [_DAL, _NYG, _PHI, _WAS],
+        ("NFC", "NFC North"): [_CHI, _DET, _GB_M, _MIN],
+        ("NFC", "NFC South"): [_ATL, _CAR, _NO_M, _TB_M],
+        ("NFC", "NFC West"):  [_ARI, _LAR, _SEA, _SF_M],
+    }),
+    # 2017-2019 — Chargers SD -> LAC.
+    (2017, 2019, {
+        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC North"): [_BAL_RAVENS, _CIN, _CLE, _PIT],
+        ("AFC", "AFC South"): [_HOU_TEXANS, _IND, _JAX, _TEN],
+        ("AFC", "AFC West"):  [_DEN, _KC_M, _LAC, _OAK],
+        ("NFC", "NFC East"):  [_DAL, _NYG, _PHI, _WAS],
+        ("NFC", "NFC North"): [_CHI, _DET, _GB_M, _MIN],
+        ("NFC", "NFC South"): [_ATL, _CAR, _NO_M, _TB_M],
+        ("NFC", "NFC West"):  [_ARI, _LAR, _SEA, _SF_M],
+    }),
+    # 2020+ — Raiders OAK -> LV.
+    (2020, 2099, {
+        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC North"): [_BAL_RAVENS, _CIN, _CLE, _PIT],
+        ("AFC", "AFC South"): [_HOU_TEXANS, _IND, _JAX, _TEN],
+        ("AFC", "AFC West"):  [_DEN, _KC_M, _LAC, _LV],
+        ("NFC", "NFC East"):  [_DAL, _NYG, _PHI, _WAS],
+        ("NFC", "NFC North"): [_CHI, _DET, _GB_M, _MIN],
+        ("NFC", "NFC South"): [_ATL, _CAR, _NO_M, _TB_M],
+        ("NFC", "NFC West"):  [_ARI, _LAR, _SEA, _SF_M],
+    }),
 ]
 
 # Earliest year covered by the era table.
-TEAM_SEASONS_MIN_YEAR = 1999
+TEAM_SEASONS_MIN_YEAR = 1970
 
 
-def _divisions_for_season(season: int) -> dict[tuple[str, str], list[str]]:
+def _divisions_for_season(
+    season: int,
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
     for start, end, divisions in _ERAS:
         if start <= season <= end:
             return divisions
     raise ValueError(
-        f"no era defined for season {season}; team_seasons covers {TEAM_SEASONS_MIN_YEAR}+"
+        f"no era defined for season {season}; team_seasons covers "
+        f"{TEAM_SEASONS_MIN_YEAR}+"
     )
 
 
 def build_team_seasons(seasons: Iterable[int]) -> pl.DataFrame:
     """Return one row per (team, season) with conference/division/franchise.
 
-    Pure function — no I/O. The era data is hand-encoded above; cross-
-    check it against published NFL realignment history if you change it.
+    Pure function — no I/O. Each era directly carries the franchise key
+    alongside the team code, so codes that mean different franchises in
+    different eras (STL = Cardinals 1970-1987 / Rams 1995-2015, BAL =
+    Colts 1970-1983 / Ravens 1996+, HOU = Oilers 1970-1996 / Texans
+    2002+) resolve correctly via the era's start/end window.
     """
-    from ffpts.normalize import NFL_TEAM_TO_FRANCHISE
-
     rows: list[dict] = []
     for season in seasons:
-        for (conf, div), teams in _divisions_for_season(season).items():
-            for team in teams:
-                franchise = NFL_TEAM_TO_FRANCHISE.get(team)
-                if franchise is None:
-                    raise KeyError(
-                        f"no franchise mapping for team={team!r} (season {season}); "
-                        f"add it to ffpts.normalize.NFL_TEAM_TO_FRANCHISE"
-                    )
+        for (conf, div), team_specs in _divisions_for_season(season).items():
+            for team, franchise in team_specs:
                 rows.append(
                     {
                         "team": team,
