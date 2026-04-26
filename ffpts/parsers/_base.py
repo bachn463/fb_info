@@ -97,6 +97,14 @@ def extract_table_rows(html: str, table_id: str) -> list[dict[str, str | None]]:
     The HTML is unwrapped of PFR comment markers up front, so passing
     the raw page works.
     """
+    # PFR uses several data-stat names for the player-name and team-name
+    # cells across page types and eras: `player`, `name_display` for the
+    # player cell; `team`, `team_name`, `team_name_abbr` for the team
+    # cell. Treat all of them as the link-bearing cell so synthetic
+    # slugs come out regardless of which table we're parsing.
+    PLAYER_STATS = {"player", "name_display"}
+    TEAM_STATS = {"team", "team_name", "team_name_abbr"}
+
     soup = BeautifulSoup(unwrap_pfr_comments(html), "lxml")
     table = soup.find("table", id=table_id)
     if table is None:
@@ -116,11 +124,11 @@ def extract_table_rows(html: str, table_id: str) -> list[dict[str, str | None]]:
                 continue
             text = cell.get_text(strip=True) or None
             row[stat] = text
-            if stat == "player":
+            if stat in PLAYER_STATS:
                 slug = extract_player_slug(cell)
                 if slug is not None:
                     row["_player_slug"] = slug
-            elif stat in ("team", "team_name"):
+            elif stat in TEAM_STATS:
                 slug = extract_team_slug(cell)
                 if slug is not None:
                     row["_team_slug"] = slug
