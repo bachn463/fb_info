@@ -163,8 +163,10 @@ def ask_pos_top(
     end: int | None = typer.Option(None, "--end", help="Last season (inclusive)."),
     draft_rounds: str | None = typer.Option(
         None, "--draft-rounds",
-        help='Comma-separated draft rounds, e.g. "4,5". Filters to '
-             "player-seasons whose draft pick was in any of these rounds.",
+        help='Comma-separated draft rounds and/or the literal "undrafted". '
+             'Examples: "4,5"  |  "undrafted"  |  "4,5,undrafted". '
+             "Filters to player-seasons whose draft pick was in any of "
+             "these rounds, or who were undrafted, or both.",
     ),
     team: str | None = typer.Option(
         None, "--team", help='Team code, e.g. "SF", "DAL", "GB".'
@@ -204,16 +206,24 @@ def ask_pos_top(
         ffpts ask pos-top --position ALL --rank-by def_int --division "NFC North"
         ffpts ask pos-top --position ALL --first-name-contains z --rank-by fpts_ppr
     """
-    rounds_list: list[int] | None = None
+    rounds_list: list[int | str] | None = None
     if draft_rounds:
-        try:
-            rounds_list = [int(x.strip()) for x in draft_rounds.split(",") if x.strip()]
-        except ValueError:
-            typer.echo(
-                f"--draft-rounds must be a comma-separated list of ints, got {draft_rounds!r}",
-                err=True,
-            )
-            raise typer.Exit(code=2)
+        rounds_list = []
+        for token in (t.strip() for t in draft_rounds.split(",")):
+            if not token:
+                continue
+            if token.lower() == "undrafted":
+                rounds_list.append("undrafted")
+                continue
+            try:
+                rounds_list.append(int(token))
+            except ValueError:
+                typer.echo(
+                    f"--draft-rounds entries must be ints or 'undrafted'; "
+                    f"got {token!r} in {draft_rounds!r}",
+                    err=True,
+                )
+                raise typer.Exit(code=2)
     sql, params = pos_topN(
         position, n=n, rank_by=rank_by,
         start=start, end=end, draft_rounds=rounds_list,

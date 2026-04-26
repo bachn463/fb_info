@@ -33,6 +33,9 @@ ffpts ask pos-top  --position ALL --first-name-contains z --rank-by fpts_ppr
 ffpts ask pos-top  --position ALL --last-name-contains  z --rank-by fpts_ppr
 ffpts ask pos-top  --position QB --rank-by pass_yds --unique --n 10
 #                                                    ^ best single season per player
+ffpts ask pos-top  --position FLEX --draft-rounds undrafted
+ffpts ask pos-top  --position QB   --draft-rounds "4,5,undrafted"
+#                                                  ^ rounds + undrafted compose
 
 # Or any raw SQL:
 ffpts query "SELECT name, fpts_ppr FROM v_player_season_full

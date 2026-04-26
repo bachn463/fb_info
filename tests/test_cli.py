@@ -185,4 +185,41 @@ def test_ask_pos_top_rejects_malformed_draft_rounds(tmp_path):
         ],
     )
     assert result.exit_code == 2
-    assert "comma-separated list of ints" in result.output
+    assert "ints or 'undrafted'" in result.output
+
+
+def test_ask_pos_top_undrafted_token(tmp_path):
+    """The literal 'undrafted' is a valid --draft-rounds token."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "FLEX",
+            "--draft-rounds", "undrafted",
+            "--db", str(db),
+        ],
+    )
+    # Our test fixture only has CMC (R1), so an undrafted-only filter
+    # returns no rows. The exit code should still be 0.
+    assert result.exit_code == 0, result.output
+    assert "(no rows)" in result.output
+
+
+def test_ask_pos_top_mixed_draft_rounds_and_undrafted(tmp_path):
+    """Mixed rounds + undrafted parses cleanly through the CLI."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "FLEX",
+            "--draft-rounds", "1,undrafted",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # CMC was R1, so they should appear.
+    assert "Christian McCaffrey" in result.output

@@ -83,6 +83,92 @@ def test_pos_top_qb_filtered_to_late_rounds_answers_user_question(db):
     assert [r[0] for r in rows] == ["Late Round QB", "5th Round QB"]
 
 
+def _seed_undrafted(db):
+    """Add a few undrafted player-seasons (NULL draft_round)."""
+    rows = [
+        # (player_id, name, season, team, position, fpts_ppr)
+        ("u1", "Undrafted RB Hero",   2002, "KC",  "RB", 285.0),
+        ("u2", "Undrafted WR Star",   2014, "MIN", "WR", 280.0),
+        ("u3", "Undrafted TE Backup", 2010, "SD",  "TE",  60.0),
+    ]
+    for pid, name, season, team, pos, ppr in rows:
+        db.execute("INSERT INTO players (player_id, name) VALUES (?, ?)", [pid, name])
+        # NO draft_picks row -> draft_round is NULL via LEFT JOIN
+        db.execute(
+            "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [pid, season, team, pos, ppr],
+        )
+
+
+def test_pos_top_undrafted_only(db):
+    _seed(db)
+    _seed_undrafted(db)
+    sql, params = pos_topN(
+        "FLEX", n=10, rank_by="fpts_ppr", draft_rounds=["undrafted"]
+    )
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    # Only the three undrafted FLEX, ordered by ppr desc.
+    assert names == ["Undrafted RB Hero", "Undrafted WR Star", "Undrafted TE Backup"]
+
+
+def test_pos_top_undrafted_token_is_case_insensitive(db):
+    _seed_undrafted(db)
+    for token in ["undrafted", "UNDRAFTED", "Undrafted"]:
+        sql, params = pos_topN(
+            "FLEX", n=10, rank_by="fpts_ppr", draft_rounds=[token]
+        )
+        names = [r[0] for r in db.execute(sql, params).fetchall()]
+        assert "Undrafted RB Hero" in names
+
+
+def test_pos_top_mixed_rounds_and_undrafted(db):
+    _seed(db)
+    _seed_undrafted(db)
+    sql, params = pos_topN(
+        "FLEX", n=10, rank_by="fpts_ppr",
+        draft_rounds=[3, "undrafted"],
+    )
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    # _seed's only round-3 FLEX is "Top TE" (240). Undrafted FLEX from
+    # _seed_undrafted: "Undrafted RB Hero" (285), "Undrafted WR Star" (280),
+    # "Undrafted TE Backup" (60). Combined and ordered by PPR desc:
+    assert names == [
+        "Undrafted RB Hero",
+        "Undrafted WR Star",
+        "Top TE",
+        "Undrafted TE Backup",
+    ]
+    # No round-1 / round-2 FLEX should appear.
+    assert "Top WR" not in names           # R1
+    assert "Top RB" not in names           # R1
+    assert "George Pickens Jr." not in names  # R2
+
+
+def test_pos_top_only_drafted_rounds_excludes_undrafted(db):
+    _seed(db)
+    _seed_undrafted(db)
+    sql, params = pos_topN(
+        "FLEX", n=20, rank_by="fpts_ppr", draft_rounds=[3]
+    )
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    # No undrafted in the result.
+    for n in names:
+        assert "Undrafted" not in n
+
+
+def test_pos_top_undrafted_token_invalid_string_raises():
+    with pytest.raises(ValueError):
+        pos_topN("FLEX", draft_rounds=["fourth"])
+
+
+def test_pos_top_undrafted_token_invalid_type_raises():
+    with pytest.raises(ValueError):
+        pos_topN("FLEX", draft_rounds=[3.5])  # type: ignore[list-item]
+
+
 def test_pos_top_flex_alias_expands_to_rb_wr_te(db):
     _seed(db)
     sql, params = pos_topN("FLEX", n=10, rank_by="fpts_ppr")

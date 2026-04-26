@@ -166,7 +166,7 @@ def pos_topN(
     rank_by: str = "fpts_ppr",
     start: int | None = None,
     end: int | None = None,
-    draft_rounds: list[int] | None = None,
+    draft_rounds: list[int | str] | None = None,
     team: str | None = None,
     division: str | None = None,
     conference: str | None = None,
@@ -187,7 +187,11 @@ def pos_topN(
 
     Optional ``start`` / ``end`` filter to a year range (inclusive on
     both ends). Optional ``draft_rounds`` filters to player-seasons
-    whose draft pick was in any of the given rounds.
+    whose draft pick was in any of the given rounds; the special token
+    ``"undrafted"`` (case-insensitive) matches players with no draft
+    entry (draft_round IS NULL). Mixing rounds and ``"undrafted"``
+    composes — e.g. ``[4, 5, "undrafted"]`` means "round 4 OR round 5
+    OR undrafted".
 
     Scope filters (all optional, all combinable):
     - ``team``: filter to a single team code, e.g. "SF", "DAL".
@@ -239,9 +243,26 @@ def pos_topN(
         params.append(end)
 
     if draft_rounds:
-        placeholders = ",".join(["?"] * len(draft_rounds))
-        where_clauses.append(f"draft_round IN ({placeholders})")
-        params.extend(draft_rounds)
+        int_rounds: list[int] = []
+        include_undrafted = False
+        for entry in draft_rounds:
+            if isinstance(entry, str) and entry.lower() == "undrafted":
+                include_undrafted = True
+            elif isinstance(entry, int) and not isinstance(entry, bool):
+                int_rounds.append(entry)
+            else:
+                raise ValueError(
+                    f"draft_rounds entries must be ints or 'undrafted', got: {entry!r}"
+                )
+        clauses: list[str] = []
+        if int_rounds:
+            placeholders = ",".join(["?"] * len(int_rounds))
+            clauses.append(f"draft_round IN ({placeholders})")
+            params.extend(int_rounds)
+        if include_undrafted:
+            clauses.append("draft_round IS NULL")
+        if clauses:
+            where_clauses.append("(" + " OR ".join(clauses) + ")")
 
     if team:
         where_clauses.append("team = ?")
