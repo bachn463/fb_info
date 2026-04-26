@@ -7,6 +7,7 @@ from ffpts.parsers._base import (
     unwrap_pfr_comments,
 )
 from ffpts.parsers.defense import parse_defense
+from ffpts.parsers.draft import parse_draft
 from ffpts.parsers.kicking import parse_kicking
 from ffpts.parsers.passing import parse_passing
 from ffpts.parsers.receiving import parse_receiving
@@ -18,6 +19,7 @@ __all__ = [
     "extract_player_slug",
     "extract_team_slug",
     "parse_defense",
+    "parse_draft",
     "parse_kicking",
     "parse_passing",
     "parse_receiving",
