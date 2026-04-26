@@ -7,12 +7,18 @@ franchise) — with **Std / Half-PPR / PPR fantasy points** computed
 in-pipeline for skill-position players (QB / RB / WR / TE).
 
 Storage is [DuckDB][duckdb]; query surface is raw SQL plus a small
-library of named helpers. Data source is [nflverse][nflverse] via the
-[`nflreadpy`][nflreadpy] Python package — covers **1999–present**.
+library of named helpers. Two data sources, joined transparently:
+
+- **[nflverse][nflverse]** via [`nflreadpy`][nflreadpy] for
+  **1999–present** — clean parquet files, no scraping.
+- **[Pro Football Reference][pfr]** for **1970–1998** — HTML scraped
+  via a one-time browser-cookie session (see "Pre-1999 PFR backfill"
+  below). Rows produced by both sources land in the same tables.
 
 [duckdb]:    https://duckdb.org/
 [nflverse]:  https://github.com/nflverse
 [nflreadpy]: https://pypi.org/project/nflreadpy/
+[pfr]:       https://www.pro-football-reference.com/
 
 ## Quickstart
 
@@ -93,7 +99,55 @@ public number).
 
 Kickers and team-defense fantasy formulas are out of scope.
 
-## Why nflverse, not Pro Football Reference
+## Pre-1999 PFR backfill
+
+For seasons before 1999, `ffpts build` pulls from PFR HTML — but PFR
+sits behind a Cloudflare Turnstile challenge that 403s every default
+HTTP client. The workaround is to reuse a real browser session via a
+copied `cf_clearance` cookie. **One-time setup** before your first
+pre-1999 build:
+
+1. Open <https://www.pro-football-reference.com/years/1985/passing.htm>
+   in your normal browser. Complete the Cloudflare challenge if shown.
+2. Open DevTools (don't toggle the device emulator). In the Console:
+   ```js
+   navigator.userAgent
+   ```
+   Copy that string verbatim — Cloudflare validates it against the
+   cookie.
+3. DevTools → Application → Cookies → `pro-football-reference.com` →
+   copy the value of `cf_clearance`.
+4. Save both into `data/pfr_session.json` (gitignored):
+   ```json
+   {
+     "cf_clearance": "<paste cookie value>",
+     "user_agent": "<paste UA verbatim>"
+   }
+   ```
+5. Run the build. Pre-1999 years are routed through PFR automatically:
+   ```bash
+   ffpts build --start 1970 --end 2025
+   ```
+   The scraper sleeps ≥ 5 s between live PFR fetches to be polite. A
+   first-time pre-1999 backfill is ~25 sample years × 7 page types ≈
+   3 minutes plus the throttle. Cache hits on subsequent runs.
+
+Cloudflare rotates `cf_clearance` periodically (typically when your IP
+shifts, or every ~30 days). When that happens the build raises
+`CloudflareSessionExpired` with refresh instructions; redo steps 1–4
+and re-run.
+
+PFR's bulk-extraction policy is gray — Stathead is the sanctioned
+commercial alternative. Use polite throttle, identify yourself, and
+don't redistribute scraped HTML.
+
+Pre-1999 player IDs use a `pfr:<slug>` namespace (e.g.
+`pfr:McCaCh01`). nflverse player IDs use the GSIS format
+(`00-0033280`). They live alongside each other in the `players`
+table; same player crossing the 1999 boundary will appear as two
+distinct entries unless a manual crosswalk fixer is added later.
+
+## Why nflverse, not Pro Football Reference (originally)
 
 The original plan was to scrape Pro Football Reference for
 1970–present coverage. PFR sits behind Cloudflare's Turnstile in its
@@ -114,11 +168,9 @@ pipeline imports it.
 
 ## Known caveats
 
-- **Coverage starts in 1999.** Pre-1999 player-seasons are not
-  loaded. The two motivating queries adapt:
-    - "FLEX in R3 top 10 PPR" — fully answerable.
-    - "NFC North INTs 1990–2005" — runs as 1999–2005, with the
-      ``historical`` division mode mapping 1999–2001 to NFC Central.
+- **Coverage now spans 1970–present** (with the pre-1999 PFR session
+  set up — see above). Without the session config, the build still
+  works but pre-1999 years are skipped.
 - **Multi-team seasons collapse.** nflverse seasonal data uses
   ``recent_team`` (the season-ending team) for traded players;
   per-team splits are not stored. PFR's "2TM"/"3TM" summary rows do
@@ -130,9 +182,16 @@ pipeline imports it.
   Some are derivable from play-by-play (``load_pbp``); others
   (punting) live in separate nflverse datasets and could be loaded
   later.
-- **Division/conference history is hand-encoded** for 1999+ in
-  [ffpts/ingest.py](ffpts/ingest.py). Cross-check against the NFL's
-  published realignment timeline if you change the era table.
+- **Division/conference history is hand-encoded** for 1970+ in
+  [ffpts/ingest.py](ffpts/ingest.py) (16 era bands cover every NFL
+  realignment). Cross-check against the NFL's published timeline if
+  you change the table.
+
+- **Some PFR codes mean different franchises in different eras.**
+  STL = Cardinals 1970–1987 / Rams 1995–2015; BAL = Colts 1970–1983 /
+  Ravens 1996+; HOU = Oilers 1970–1996 / Texans 2002+. The era table
+  embeds the franchise per band so queries by `franchise` resolve
+  correctly across the boundary.
 
 ## Development
 
@@ -149,9 +208,14 @@ ffpts/
 ├── scoring.py     std/half/ppr formula on a frozen StatLine dataclass
 ├── normalize.py   franchise slug map, NFL team-code map, position aliases
 ├── db.py          DuckDB schema, connection, views
-├── scraper.py     [DORMANT] HTTP + cache + throttle for a future PFR pull
+├── scraper.py     HTTP + cache + throttle + cf_clearance session
+├── parsers/       PFR HTML -> typed rows (one module per page type)
+│   ├── passing.py rushing.py receiving.py defense.py
+│   ├── kicking.py returns.py draft.py standings.py
+│   └── _base.py   comment-stripping + table-extract helpers
 ├── ingest.py      nflverse -> our schema (player seasons, draft, team_seasons)
-├── pipeline.py    build(seasons, ...) — idempotent, per-season transactions
+├── ingest_pfr.py  PFR -> our schema (pre-1999 backfill orchestrator)
+├── pipeline.py    build(seasons, ...) — routes per-year by source boundary
 ├── queries.py     named helpers; player-season default
 └── cli.py         `ffpts build | query | ask`
 ```
