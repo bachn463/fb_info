@@ -39,8 +39,11 @@ _COMMENT_AROUND_TABLE_RE = re.compile(
     re.DOTALL,
 )
 
-# PFR player link href pattern: /players/X/Xxxx00.htm
-_PLAYER_HREF_RE = re.compile(r"/players/([A-Z])/([A-Za-z0-9]+)\.htm")
+# PFR player link href pattern: /players/X/Xxxx00.htm. The slug can
+# contain literal periods (e.g. "WattT.00" for T.J. Watt) and rare
+# other punctuation; we capture everything after the second slash up
+# to the final .htm.
+_PLAYER_HREF_RE = re.compile(r"/players/([A-Z])/([A-Za-z0-9.]+)\.htm")
 
 # Team link href pattern: /teams/abc/2023.htm
 _TEAM_HREF_RE = re.compile(r"/teams/([a-z]{3})/\d{4}\.htm")
