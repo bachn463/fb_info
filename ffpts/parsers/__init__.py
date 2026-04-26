@@ -10,6 +10,7 @@ from ffpts.parsers.defense import parse_defense
 from ffpts.parsers.kicking import parse_kicking
 from ffpts.parsers.passing import parse_passing
 from ffpts.parsers.receiving import parse_receiving
+from ffpts.parsers.returns import parse_returns
 from ffpts.parsers.rushing import parse_rushing
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "parse_kicking",
     "parse_passing",
     "parse_receiving",
+    "parse_returns",
     "parse_rushing",
     "unwrap_pfr_comments",
 ]
