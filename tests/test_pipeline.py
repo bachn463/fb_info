@@ -310,3 +310,124 @@ def test_q1_motivating_query_finds_cmc_round_1(populated_db):
     assert rows[0][1] == "CAR"
     assert rows[0][2] == 2017
     assert rows[0][4] == 1
+
+
+# --- Mixed-source build (PFR pre-1999 + nflverse 1999+) ------------------
+
+
+def _fixture_scraper():
+    """A duck-typed scraper that reads from tests/fixtures/."""
+    from tests.test_ingest_pfr import _FixtureScraper
+    return _FixtureScraper()
+
+
+def test_mixed_source_build_lands_pfr_and_nflverse_rows():
+    """build([1985, 2017]) routes 1985 through PFR and 2017 through
+    nflverse — both data sources land into the same DB tables and
+    coexist without PK conflicts."""
+    con = connect(None)
+    apply_schema(con)
+    try:
+        summary = build(
+            seasons=[1985, 2017],
+            con=con,
+            player_loader=fake_player_stats_loader,
+            draft_loader=fake_draft_loader,
+            pfr_scraper=_fixture_scraper(),
+        )
+        assert summary["pfr_seasons"] == [1985]
+        assert summary["nfl_seasons"] == [2017]
+
+        # Player-season rows landed for both years.
+        counts = dict(con.execute(
+            "SELECT season, COUNT(*) FROM player_season_stats GROUP BY season"
+        ).fetchall())
+        assert counts[1985] > 800     # PFR side
+        assert counts[2017] == 1      # nflverse fixture has just CMC
+
+        # Draft-picks landed for both year ranges.
+        pfr_draft_n = con.execute(
+            "SELECT COUNT(*) FROM draft_picks WHERE year < 1999"
+        ).fetchone()[0]
+        nfl_draft_n = con.execute(
+            "SELECT COUNT(*) FROM draft_picks WHERE year >= 1999"
+        ).fetchone()[0]
+        assert pfr_draft_n > 200
+        # The fake_draft_loader has two players (CMC 2017 + Urlacher 2000),
+        # both 1999+ so both go to the nflverse side.
+        assert nfl_draft_n == 2
+
+        # Player IDs use distinct namespaces by source.
+        pfr_ids = con.execute(
+            "SELECT COUNT(*) FROM players WHERE player_id LIKE 'pfr:%'"
+        ).fetchone()[0]
+        gsis_ids = con.execute(
+            "SELECT COUNT(*) FROM players WHERE player_id NOT LIKE 'pfr:%'"
+        ).fetchone()[0]
+        assert pfr_ids > 800
+        assert gsis_ids >= 1
+    finally:
+        con.close()
+
+
+def test_q2_mixed_source_nfc_central_returns_pre_1999_rows():
+    """The Q2 motivating query: 'NFC North 1990-2005, historical mode'.
+    With the PFR backfill landing pre-1999 data, the NFC Central side
+    of that window returns real rows now."""
+    con = connect(None)
+    apply_schema(con)
+    try:
+        build(
+            seasons=[1985],   # one PFR year so we have NFC Central data
+            con=con,
+            player_loader=fake_player_stats_loader,
+            draft_loader=fake_draft_loader,
+            pfr_scraper=_fixture_scraper(),
+        )
+        rows = con.execute(
+            """
+            SELECT name, team, season, def_int, division
+            FROM   v_player_season_full
+            WHERE  division = 'NFC Central'
+              AND  def_int IS NOT NULL
+              AND  def_int > 0
+            ORDER BY def_int DESC
+            LIMIT 10
+            """
+        ).fetchall()
+        # Mike Singletary, Wilber Marshall, Mike Richardson etc. should
+        # appear — Bears '85 had a lot of INTs.
+        assert len(rows) > 0
+        # Every row is from the NFC Central in 1985.
+        for r in rows:
+            assert r[2] == 1985
+            assert r[4] == "NFC Central"
+            assert r[1] in {"CHI", "DET", "GNB", "MIN", "TAM"}
+    finally:
+        con.close()
+
+
+def test_pipeline_attaches_team_records_from_standings():
+    """Standings parser feeds W/L into team_seasons; verify they land."""
+    con = connect(None)
+    apply_schema(con)
+    try:
+        build(
+            seasons=[1985],
+            con=con,
+            player_loader=fake_player_stats_loader,
+            draft_loader=fake_draft_loader,
+            pfr_scraper=_fixture_scraper(),
+        )
+        # Bears were 15-1 in 1985 (NFC Central, franchise=bears).
+        bears = con.execute(
+            "SELECT wins, losses FROM team_seasons WHERE franchise = 'bears' AND season = 1985"
+        ).fetchone()
+        assert bears == (15, 1)
+        # Dolphins were 12-4.
+        dolphins = con.execute(
+            "SELECT wins, losses FROM team_seasons WHERE franchise = 'dolphins' AND season = 1985"
+        ).fetchone()
+        assert dolphins == (12, 4)
+    finally:
+        con.close()
