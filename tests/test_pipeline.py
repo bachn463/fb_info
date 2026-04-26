@@ -493,6 +493,118 @@ def test_namespaced_draft_replacement_does_not_clobber_other_namespace():
         con.close()
 
 
+def test_supplemental_drafts_inserted_for_matched_player():
+    """Hand-encoded supp draft picks land into draft_picks if the
+    player's name matches a row in the populated players table."""
+    # Synthetic: player_stats loader returns a Cris Carter row
+    # (a known supp draftee, 1987 R4 by PHI). Pipeline should match
+    # by name and insert his supp draft entry.
+    cris_carter_row = {**CMC_2017,
+        "player_id": "00-supp-test",
+        "player_display_name": "Cris Carter",
+        "season": 2000,
+        "recent_team": "MIN",
+        "position": "WR",
+    }
+
+    def loader(seasons):
+        return pl.DataFrame([cris_carter_row])
+
+    def empty_drafts():
+        # No regular drafts — just want to verify supp drafts populate.
+        return pl.DataFrame(
+            schema={
+                "season":           pl.Int64,
+                "round":            pl.Int64,
+                "pick":             pl.Int64,
+                "team":             pl.Utf8,
+                "gsis_id":          pl.Utf8,
+                "pfr_player_id":    pl.Utf8,
+                "pfr_player_name":  pl.Utf8,
+                "position":         pl.Utf8,
+            }
+        )
+
+    con = connect(None)
+    apply_schema(con)
+    try:
+        summary = build(
+            seasons=[2000],
+            con=con,
+            player_loader=loader,
+            draft_loader=empty_drafts,
+        )
+        # Supp draft for Cris Carter inserted.
+        assert summary["supplemental_draft_rows"] >= 1
+        carter_draft = con.execute(
+            "SELECT year, round, team, overall_pick FROM draft_picks "
+            "WHERE player_id = '00-supp-test'"
+        ).fetchone()
+        assert carter_draft == (1987, 4, "PHI", 0)
+
+        # And he no longer appears as undrafted in v_player_season_full.
+        joined = con.execute(
+            "SELECT name, draft_round, draft_year "
+            "FROM v_player_season_full "
+            "WHERE name = 'Cris Carter'"
+        ).fetchone()
+        assert joined == ("Cris Carter", 4, 1987)
+    finally:
+        con.close()
+
+
+def test_supplemental_drafts_no_op_for_unknown_player():
+    """Supp drafts for players who didn't make it into the DB this run
+    are skipped (no orphan rows)."""
+    # Fixture loader has only CMC; none of the supp picks are present.
+    con = connect(None)
+    apply_schema(con)
+    try:
+        summary = build(
+            seasons=[2017],
+            con=con,
+            player_loader=fake_player_stats_loader,
+            draft_loader=fake_draft_loader,
+        )
+        # No supp picks should match (Cris Carter, Bernie Kosar etc.
+        # aren't in this DB).
+        assert summary["supplemental_draft_rows"] == 0
+    finally:
+        con.close()
+
+
+def test_supplemental_drafts_idempotent():
+    """Re-running build doesn't duplicate supp draft rows."""
+    cris = {**CMC_2017, "player_id": "00-cris", "player_display_name": "Cris Carter",
+            "season": 2000, "recent_team": "MIN", "position": "WR"}
+
+    def loader(seasons):
+        return pl.DataFrame([cris])
+
+    def empty_drafts():
+        return pl.DataFrame(
+            schema={
+                "season": pl.Int64, "round": pl.Int64, "pick": pl.Int64,
+                "team": pl.Utf8, "gsis_id": pl.Utf8,
+                "pfr_player_id": pl.Utf8, "pfr_player_name": pl.Utf8,
+                "position": pl.Utf8,
+            }
+        )
+
+    con = connect(None)
+    apply_schema(con)
+    try:
+        for _ in range(2):
+            build(seasons=[2000], con=con, player_loader=loader, draft_loader=empty_drafts)
+        # Still exactly one Cris Carter draft row.
+        n = con.execute(
+            "SELECT COUNT(*) FROM draft_picks WHERE player_id = '00-cris'"
+        ).fetchone()[0]
+        assert n == 1
+    finally:
+        con.close()
+
+
 def test_pipeline_attaches_team_records_from_standings():
     """Standings parser feeds W/L into team_seasons; verify they land."""
     con = connect(None)

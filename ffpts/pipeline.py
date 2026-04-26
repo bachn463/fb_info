@@ -142,6 +142,43 @@ def _replace_player_season_stats(
     con.unregister("staging_stats")
 
 
+def _insert_supplemental_drafts(con: duckdb.DuckDBPyConnection) -> int:
+    """Insert hand-encoded supplemental-draft picks into draft_picks.
+
+    For each entry in ``SUPPLEMENTAL_DRAFTS``, look up matching
+    ``player_id``s by display name in the populated ``players`` table
+    and insert a draft row keyed by each. A player who spans the
+    1999 boundary has two ``players`` rows (one ``pfr:<slug>``-keyed,
+    one GSIS-keyed) so they get one supp-draft entry per namespace —
+    each side of their stats finds its draft entry.
+
+    Idempotent (uses ``ON CONFLICT DO UPDATE``). Returns count of rows
+    inserted/updated.
+    """
+    from ffpts.supplemental_drafts import SUPP_PICK_SENTINEL, SUPPLEMENTAL_DRAFTS
+
+    affected = 0
+    for supp in SUPPLEMENTAL_DRAFTS:
+        rows = con.execute(
+            "SELECT player_id FROM players WHERE name = ?", [supp.name]
+        ).fetchall()
+        for (pid,) in rows:
+            con.execute(
+                """
+                INSERT INTO draft_picks (player_id, year, round, overall_pick, team)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (player_id) DO UPDATE SET
+                    year         = excluded.year,
+                    round        = excluded.round,
+                    overall_pick = excluded.overall_pick,
+                    team         = excluded.team
+                """,
+                [pid, supp.year, supp.round, SUPP_PICK_SENTINEL, supp.team],
+            )
+            affected += 1
+    return affected
+
+
 def _attach_team_records(
     con: duckdb.DuckDBPyConnection,
     records: pl.DataFrame,
@@ -262,12 +299,19 @@ def build(
                 _replace_player_season_stats(con, stats, season)
                 stats_count_by_season[season] = stats.height
 
+        # ---- Supplemental drafts (cross-cutting) -------------------------
+        # Has to run AFTER the namespace replacements and AFTER stats
+        # are loaded so the players-table lookup finds whichever IDs
+        # the supp picks ended up with in this build.
+        supp_count = _insert_supplemental_drafts(con)
+
         summary = {
             "seasons": seasons_list,
             "pfr_seasons": pfr_years,
             "nfl_seasons": nfl_years,
             "team_seasons_rows": ts.height,
             "draft_picks_rows": pfr_draft_count + nfl_draft_count,
+            "supplemental_draft_rows": supp_count,
             "player_season_stats_rows": stats_count_by_season,
         }
     finally:
