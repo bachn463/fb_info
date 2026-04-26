@@ -19,6 +19,9 @@ data/cache/
 data/*.duckdb
 data/*.duckdb.wal
 
+# PFR browser session config (contains cf_clearance cookie — never commit)
+data/pfr_session.json
+
 # Editors / tooling metadata
 .vscode/
 .idea/
