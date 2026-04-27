@@ -25,7 +25,7 @@ from typing import Iterable, Optional
 import duckdb
 import polars as pl
 
-from ffpts import ingest_pfr
+from ffpts import ingest_awards, ingest_pfr
 from ffpts.db import DEFAULT_DB_PATH, init_db
 from ffpts.ingest import build_team_seasons
 
@@ -111,6 +111,7 @@ def _replace_player_season_stats(
     # is NULL (rare PFR parser-time anomalies).
     if stats.is_empty():
         con.execute("DELETE FROM player_season_stats WHERE season = ?", [season])
+        con.execute("DELETE FROM player_awards WHERE season = ?", [season])
         return
     insertable = stats.filter(
         pl.col("player_id").is_not_null()
@@ -129,6 +130,17 @@ def _replace_player_season_stats(
         "INSERT INTO player_season_stats BY NAME SELECT * FROM staging_stats"
     )
     con.unregister("staging_stats")
+
+    # Awards — derive from the raw `awards` cell carried through the
+    # staging frame, then replace this season's rows in player_awards.
+    awards_df = ingest_awards.derive_awards(stats)
+    con.execute("DELETE FROM player_awards WHERE season = ?", [season])
+    if not awards_df.is_empty():
+        con.register("staging_awards", awards_df)
+        con.execute(
+            "INSERT INTO player_awards BY NAME SELECT * FROM staging_awards"
+        )
+        con.unregister("staging_awards")
 
 
 def _insert_supplemental_drafts(con: duckdb.DuckDBPyConnection) -> int:
@@ -233,7 +245,7 @@ def build(
         )
         _attach_team_records(con, records, seasons_list)
 
-        # Player-season stats per year.
+        # Player-season stats + awards per year.
         stats_count_by_season: dict[int, int] = {}
         for season in seasons_list:
             stats = ingest_pfr.load_player_seasons(
@@ -246,12 +258,17 @@ def build(
         # so the players-table lookup finds the right IDs.
         supp_count = _insert_supplemental_drafts(con)
 
+        awards_total = con.execute(
+            "SELECT COUNT(*) FROM player_awards"
+        ).fetchone()[0]
+
         summary = {
             "seasons": seasons_list,
             "team_seasons_rows": ts.height,
             "draft_picks_rows": drafts.height,
             "supplemental_draft_rows": supp_count,
             "player_season_stats_rows": stats_count_by_season,
+            "player_awards_rows": awards_total,
         }
     finally:
         if owns_con:
