@@ -185,6 +185,8 @@ def pos_topN(
     # Backward-compat additive filters — each defaults to a no-op.
     has_award: list[str] | None = None,
     rookie_only: bool = False,
+    min_stats: dict[str, float] | None = None,
+    max_stats: dict[str, float] | None = None,
 ) -> tuple[str, list]:
     """Top-N player-seasons at a given position, ranked by ``rank_by``.
 
@@ -234,6 +236,12 @@ def pos_topN(
       equalling ``MIN(season) FROM player_season_stats`` for that
       player. Caveat: "first season we have data for", which is the
       rookie year for almost everyone in scope.
+    - ``min_stats`` / ``max_stats``: dicts of ``{stat_column: threshold}``.
+      Adds ``col >= threshold`` / ``col <= threshold`` clauses. Column
+      names are validated against ``RANK_BY_ALLOWED`` (same allowlist
+      as ``rank_by``) so they're safe to interpolate. Useful for
+      "top X with at least N rec_yds" or "high-volume RBs with low
+      rush_yds" style queries.
 
     Returns rows of (name, team, season, position, rank_value,
     draft_round, draft_year, draft_overall_pick) — column set is
@@ -341,6 +349,27 @@ def pos_topN(
             "season = (SELECT MIN(season) FROM player_season_stats "
             "WHERE player_id = v_player_season_full.player_id)"
         )
+
+    # Min/max stat thresholds. Column names validated against the
+    # same allowlist as rank_by (no SQL injection).
+    if min_stats:
+        for col, val in min_stats.items():
+            if col not in RANK_BY_ALLOWED:
+                raise ValueError(
+                    f"unknown min_stats column {col!r}; allowed: "
+                    f"{sorted(RANK_BY_ALLOWED)}"
+                )
+            where_clauses.append(f"{col} >= ?")
+            params.append(val)
+    if max_stats:
+        for col, val in max_stats.items():
+            if col not in RANK_BY_ALLOWED:
+                raise ValueError(
+                    f"unknown max_stats column {col!r}; allowed: "
+                    f"{sorted(RANK_BY_ALLOWED)}"
+                )
+            where_clauses.append(f"{col} <= ?")
+            params.append(val)
 
     where_sql = " AND ".join(where_clauses)
     if unique:

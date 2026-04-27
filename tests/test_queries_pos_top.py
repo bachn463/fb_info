@@ -540,6 +540,88 @@ def test_combined_has_award_and_rookie_only(db):
     assert [(r[0], r[2]) for r in rows] == [("Rookie OROY", 2020)]
 
 
+def test_min_stats_filter_excludes_low_volume(db):
+    """--min-stat rush_yds=1000 keeps only seasons over the threshold."""
+    _seed(db)  # has Top RB at 564 rec yds, etc.
+    db.execute("""
+        INSERT INTO players (player_id, name) VALUES ('big_rb', '1500 Yarder')
+    """)
+    db.execute("""
+        INSERT INTO player_season_stats (player_id, season, team, position, rush_yds, fpts_ppr)
+        VALUES ('big_rb', 2010, 'DAL', 'RB', 1500, 350.0)
+    """)
+    sql, params = pos_topN(
+        "RB", n=10, rank_by="rush_yds",
+        min_stats={"rush_yds": 1000},
+    )
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    assert "1500 Yarder" in names
+    assert "Top RB" not in names  # 0 rush_yds in seed (it's a receiving RB)
+
+
+def test_max_stats_filter_motivating_example(db):
+    """User's example: top RBs by rush attempts with rush_yds <= 999.
+    High-volume / low-yardage seasons."""
+    _seed(db)
+    db.execute("""
+        INSERT INTO players (player_id, name) VALUES
+            ('grinder', 'Volume Grinder'),
+            ('breakaway', 'Breakaway Back')
+    """)
+    db.execute("""
+        INSERT INTO player_season_stats (player_id, season, team, position, rush_att, rush_yds, fpts_ppr)
+        VALUES
+            ('grinder',   2010, 'PIT', 'RB', 280, 950, 200.0),
+            ('breakaway', 2010, 'PIT', 'RB', 200, 1500, 250.0)
+    """)
+    sql, params = pos_topN(
+        "RB", n=10, rank_by="rush_att",
+        team="PIT",
+        max_stats={"rush_yds": 999},
+    )
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    # Volume Grinder qualifies (950 yds, under cap); Breakaway doesn't.
+    assert "Volume Grinder" in names
+    assert "Breakaway Back" not in names
+
+
+def test_min_and_max_stats_combine(db):
+    """Both filters combined narrow the band further."""
+    _seed(db)
+    db.execute("""
+        INSERT INTO players (player_id, name) VALUES
+            ('low', 'Below Min'),
+            ('mid', 'In Range'),
+            ('high', 'Above Max')
+    """)
+    db.execute("""
+        INSERT INTO player_season_stats (player_id, season, team, position, rec_yds, fpts_ppr)
+        VALUES
+            ('low',  2020, 'DAL', 'WR', 400,  40.0),
+            ('mid',  2020, 'DAL', 'WR', 800,  80.0),
+            ('high', 2020, 'DAL', 'WR', 1500, 150.0)
+    """)
+    sql, params = pos_topN(
+        "WR", n=10, rank_by="rec_yds",
+        team="DAL",  # exclude pre-seeded Pickens (PIT)
+        min_stats={"rec_yds": 500},
+        max_stats={"rec_yds": 1200},
+    )
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    assert names == ["In Range"]
+
+
+def test_min_stats_unknown_column_raises():
+    with pytest.raises(ValueError):
+        pos_topN("RB", min_stats={"nonexistent_column": 100})
+
+
+def test_max_stats_unknown_column_raises():
+    with pytest.raises(ValueError):
+        pos_topN("RB", max_stats={"DROP TABLE": 100})
+
+
 def test_no_filters_unchanged_column_order_backward_compat(db):
     """Backward-compat sanity: pos_topN with no new filters returns
     the same 8 columns in the same order as before C6."""
