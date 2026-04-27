@@ -124,9 +124,10 @@ def most_def_int_by_division(
 # Position-specific top-N: pick a position (or "FLEX" / "ALL"), pick a
 # stat to rank by, optionally filter by year range and/or draft round(s).
 # rank_by is interpolated into SQL, so it MUST be validated against this
-# allowlist of ranking-eligible columns from player_season_stats.
+# allowlist of ranking-eligible columns. All numeric so sorting DESC is
+# meaningful.
 RANK_BY_ALLOWED: frozenset[str] = frozenset({
-    "games", "games_started",
+    "games", "games_started", "age",
     # passing
     "pass_cmp", "pass_att", "pass_yds", "pass_td", "pass_int",
     "pass_sacks_taken", "pass_sack_yds", "pass_long", "pass_rating",
@@ -149,6 +150,9 @@ RANK_BY_ALLOWED: frozenset[str] = frozenset({
     "two_pt_pass", "two_pt_rush", "two_pt_rec",
     # fantasy
     "fpts_std", "fpts_half", "fpts_ppr",
+    # Draft columns — drafted players only (rank_by adds an `IS NOT
+    # NULL` clause that excludes undrafted).
+    "draft_year", "draft_round", "draft_overall_pick",
 })
 
 # Position aliases: caller-friendly names that expand to a set.

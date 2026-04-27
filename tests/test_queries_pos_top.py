@@ -755,6 +755,38 @@ def test_ever_won_unknown_label_raises():
         pos_topN("QB", ever_won_award=["BEST_HAIR"])
 
 
+def test_rank_by_draft_year_orders_latest_first(db):
+    """--rank-by draft_year is now allowed; sorts DESC so most-recent
+    drafts come first. Excludes undrafted (draft_year IS NULL filter)."""
+    db.execute("INSERT INTO players (player_id, name) VALUES "
+               "('a','2010 pick'),('b','2020 pick'),('u','Undrafted')")
+    db.execute(
+        "INSERT INTO draft_picks (player_id, year, round, overall_pick, team) VALUES "
+        "('a', 2010, 1, 1, 'DAL'),"
+        "('b', 2020, 1, 1, 'DAL')"
+    )
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES "
+        "('a', 2015, 'DAL', 'WR', 100),"
+        "('b', 2022, 'DAL', 'WR', 100),"
+        "('u', 2018, 'DAL', 'WR', 100)"
+    )
+    sql, params = pos_topN("WR", n=10, rank_by="draft_year", team="DAL")
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    assert names == ["2020 pick", "2010 pick"]
+    # Undrafted excluded.
+    assert "Undrafted" not in names
+
+
+def test_rank_by_draft_round_and_age(db):
+    """Sanity: draft_round and age are also rank-eligible."""
+    sql, _ = pos_topN("ALL", rank_by="draft_round")
+    assert "draft_round DESC" in sql
+    sql2, _ = pos_topN("ALL", rank_by="age")
+    assert "age DESC" in sql2
+
+
 def test_drafted_by_filters_to_team_that_drafted_player(db):
     """--drafted-by uses draft_team, not the team the player played for."""
     db.execute("INSERT INTO players (player_id, name) VALUES "
