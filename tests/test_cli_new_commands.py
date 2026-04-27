@@ -444,6 +444,74 @@ def test_trivia_random_position_matches_stat(tmp_path):
     assert len(seen_pairs) >= 5
 
 
+# ---------- ask awards-top, college, career stat min/max ----------
+
+def test_cli_ask_awards_top_runs(tmp_path):
+    """ask awards-top should run with the SAFETY alias and a
+    --max-career-stat filter."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        ["ask", "awards-top",
+         "--award", "AP_FIRST",
+         "--position", "SAFETY",
+         "--max-career-stat", "def_int=30",
+         "--n", "5",
+         "--db", str(db)],
+    )
+    assert result.exit_code == 0, result.output
+    # Header columns should appear.
+    for col in ("name", "positions", "teams", "college", "award_count"):
+        assert col in result.output
+
+
+def test_cli_ask_awards_top_help_lists_safety_alias():
+    """The --position help text should mention SAFETY so users find it."""
+    result = runner.invoke(app, ["ask", "awards-top", "--help"])
+    assert result.exit_code == 0
+    assert "SAFETY" in result.output
+
+
+def test_cli_ask_pos_top_min_career_stat_runs(tmp_path):
+    """--min-career-stat threads through to pos_topN without error."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        ["ask", "pos-top", "--position", "QB", "--rank-by", "pass_yds",
+         "--min-career-stat", "pass_yds=2000",
+         "--n", "3", "--db", str(db)],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_cli_ask_career_max_career_stat_runs(tmp_path):
+    """ask career with --max-career-stat — runs cleanly."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        ["ask", "career", "--rank-by", "rush_yds",
+         "--max-career-stat", "rush_att=100",
+         "--n", "5", "--db", str(db)],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_cli_ask_pos_top_college_runs(tmp_path):
+    """College substring filter runs cleanly even when no rows match."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        ["ask", "pos-top", "--position", "QB", "--rank-by", "pass_yds",
+         "--college", "Alabama",
+         "--n", "5", "--db", str(db)],
+    )
+    assert result.exit_code == 0, result.output
+
+
 def test_trivia_random_some_seed_produces_no_unique_title(tmp_path):
     """At least one of the first 30 random seeds should land on a
     `unique=False` template, surfacing the multi-season tag in the

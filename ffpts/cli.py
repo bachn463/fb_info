@@ -26,6 +26,7 @@ from ffpts.pipeline import build as run_build
 from ffpts.queries import (
     AWARD_TYPES_ALLOWED,
     RANK_BY_ALLOWED,
+    award_topN,
     awards_list,
     career_topN,
     flex_topN_by_draft_round,
@@ -264,6 +265,26 @@ def ask_pos_top(
         help="Stat ceiling of the form col=value. Repeatable. "
              'Example: --max-stat rush_yds=999',
     ),
+    college: str | None = typer.Option(
+        None, "--college",
+        help='College name (substring match). Example: --college Oregon. '
+             'Only catches drafted players (PFR exposes college on draft '
+             'pages); undrafted UDFAs are excluded.',
+    ),
+    min_career_stat: list[str] | None = typer.Option(
+        None, "--min-career-stat",
+        help="Career-total floor of the form col=value. Filters to "
+             "players whose SUM(col) across all seasons is >= value. "
+             "Repeatable. Ratio stats (pass_cmp_pct, catch_rate) "
+             "recompute as SUM(num)/SUM(den). "
+             "Example: --min-career-stat pass_yds=20000",
+    ),
+    max_career_stat: list[str] | None = typer.Option(
+        None, "--max-career-stat",
+        help="Career-total ceiling of the form col=value. Same shape "
+             'as --min-career-stat. Example: '
+             '--max-career-stat def_int=30 (under 30 career INTs).',
+    ),
     show_awards: bool = typer.Option(
         False, "--show-awards/--no-show-awards",
         help="Append an `awards` column (comma-list of award_types "
@@ -313,6 +334,8 @@ def ask_pos_top(
 
     min_stats_dict = _parse_stat_pairs(min_stat, "--min-stat")
     max_stats_dict = _parse_stat_pairs(max_stat, "--max-stat")
+    min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
+    max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
 
     sql, params = pos_topN(
         position, n=n, rank_by=rank_by,
@@ -329,6 +352,9 @@ def ask_pos_top(
         tiebreak_by=tiebreak_by if tiebreak_by else None,
         min_stats=min_stats_dict if min_stats_dict else None,
         max_stats=max_stats_dict if max_stats_dict else None,
+        college=college,
+        min_career_stats=min_career_dict if min_career_dict else None,
+        max_career_stats=max_career_dict if max_career_dict else None,
     )
     con = _open_db(db)
     try:
@@ -973,6 +999,23 @@ def ask_career(
         help="Require at least this many qualifying seasons "
              "(blocks one-year-wonders distorting the leaderboard).",
     ),
+    college: str | None = typer.Option(
+        None, "--college",
+        help="College name (substring match). Drafted players only.",
+    ),
+    min_career_stat: list[str] | None = typer.Option(
+        None, "--min-career-stat",
+        help="Career-total floor of the form col=value. Repeatable. "
+             "Composes with --rank-by — use to require, e.g., "
+             "--min-career-stat games=100 alongside a low-volume "
+             "ranking.",
+    ),
+    max_career_stat: list[str] | None = typer.Option(
+        None, "--max-career-stat",
+        help="Career-total ceiling of the form col=value. Example: "
+             '"--max-career-stat def_int=30" for safeties with under '
+             "30 career interceptions.",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
 ) -> None:
     """Top-N players by *career-total* of --rank-by.
@@ -981,11 +1024,16 @@ def ask_career(
     Career totals are summed across the seasons that match the
     optional filters, then ranked.
     """
+    min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
+    max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
     sql, params = career_topN(
         rank_by, n=n, position=position,
         start=start, end=end,
         ever_won_award=ever_won if ever_won else None,
         min_seasons=min_seasons,
+        college=college,
+        min_career_stats=min_career_dict if min_career_dict else None,
+        max_career_stats=max_career_dict if max_career_dict else None,
     )
     con = _open_db(db)
     try:
@@ -1022,6 +1070,71 @@ def ask_awards(
     (winners only); pass --award and/or --season to scope down."""
     sql, params = awards_list(
         award_type=award, season=season, winners_only=winners_only,
+    )
+    con = _open_db(db)
+    try:
+        cur = con.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        _print_rows(cur.fetchall(), cols)
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# `ask awards-top` — top-N players by career count of an award type
+# ---------------------------------------------------------------------------
+
+@ask_app.command("awards-top")
+def ask_awards_top(
+    award: str = typer.Option(
+        ..., "--award",
+        help="Award type to count. One of: " + ", ".join(sorted(AWARD_TYPES_ALLOWED))
+        + ". Outright winners only — vote-only finalists excluded.",
+    ),
+    n: int = typer.Option(10, "--n"),
+    position: str = typer.Option(
+        "ALL", "--position",
+        help='Position scope (or alias: SAFETY / DB / LB / DL / FLEX / '
+             'ALL). Filters to players whose stats include any season '
+             "at this position.",
+    ),
+    college: str | None = typer.Option(
+        None, "--college",
+        help="College name (substring match). Drafted players only.",
+    ),
+    min_career_stat: list[str] | None = typer.Option(
+        None, "--min-career-stat",
+        help="Career-total floor of the form col=value. Repeatable. "
+             "Example: --min-career-stat games=64",
+    ),
+    max_career_stat: list[str] | None = typer.Option(
+        None, "--max-career-stat",
+        help="Career-total ceiling. Example: "
+             '"--max-career-stat def_int=30" for the user\'s sample '
+             "query: safeties with <30 career INTs and the most "
+             "AP_FIRST awards.",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+) -> None:
+    """Top-N players by career count of a single award type.
+
+    Counts outright wins only (vote_finish=1 for vote-ranked awards;
+    all rows for binary awards like PB / AP_FIRST / AP_SECOND /
+    WPMOY). Position, college, and career stat filters compose.
+
+    Example — safeties with under 30 career interceptions, ranked
+    by AP_FIRST count:
+
+        fb_info ask awards-top --award AP_FIRST --position SAFETY \\
+            --max-career-stat def_int=30 --n 10
+    """
+    min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
+    max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
+    sql, params = award_topN(
+        award, n=n, position=position,
+        college=college,
+        min_career_stats=min_career_dict if min_career_dict else None,
+        max_career_stats=max_career_dict if max_career_dict else None,
     )
     con = _open_db(db)
     try:

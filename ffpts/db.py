@@ -37,7 +37,8 @@ SCHEMA_DDL: list[str] = [
         year          INTEGER NOT NULL,
         round         INTEGER NOT NULL,
         overall_pick  INTEGER NOT NULL,
-        team          TEXT    NOT NULL    -- drafting team, PFR display code that year
+        team          TEXT    NOT NULL,   -- drafting team, PFR display code that year
+        college       TEXT               -- "Alabama", "Ohio St.", etc.; NULL for older / unknown
     );
     """,
     """
@@ -177,6 +178,7 @@ VIEWS_DDL: list[str] = [
             d.round        AS draft_round,
             d.overall_pick AS draft_overall_pick,
             d.team         AS draft_team,
+            d.college      AS college,
             t.conference,
             t.division,
             t.franchise

@@ -162,9 +162,19 @@ RANK_BY_ALLOWED: frozenset[str] = frozenset({
 
 # Position aliases: caller-friendly names that expand to a set.
 # "ALL" means "no position filter" (handled specially below).
+# Defensive groupings (SAFETY / DB / LB / DL) cover PFR's fine-grained
+# variants — PFR records safeties as 'S', 'SS', or 'FS' across eras,
+# corners as 'CB', linebackers as 'LB' / 'OLB' / 'MLB' / 'ILB' /
+# 'RLB' / 'LLB', and DL as 'DE' / 'DT' / 'NT' (incl. side-suffixed
+# forms). The aliases group them so a single --position SAFETY filter
+# catches every flavor.
 POSITION_ALIASES: dict[str, list[str] | None] = {
-    "FLEX": ["RB", "WR", "TE"],
-    "ALL":  None,
+    "FLEX":   ["RB", "WR", "TE"],
+    "ALL":    None,
+    "SAFETY": ["S", "SS", "FS"],
+    "DB":     ["CB", "S", "SS", "FS", "DB", "RCB", "LCB"],
+    "LB":     ["LB", "OLB", "MLB", "ILB", "RLB", "LLB"],
+    "DL":     ["DE", "DT", "NT", "LDE", "RDE", "LDT", "RDT"],
 }
 
 # Award types accepted by the has_award filter. Validated up-front so
@@ -210,6 +220,9 @@ def pos_topN(
     ever_won_award: list[str] | None = None,
     drafted_by: str | None = None,
     tiebreak_by: list[str] | None = None,
+    college: str | None = None,
+    min_career_stats: dict[str, float] | None = None,
+    max_career_stats: dict[str, float] | None = None,
 ) -> tuple[str, list]:
     """Top-N player-seasons at a given position, ranked by ``rank_by``.
 
@@ -451,6 +464,27 @@ def pos_topN(
             where_clauses.append(f"{col} <= ?")
             params.append(val)
 
+    # College filter — substring match (ILIKE) against draft_picks.college
+    # via the v_player_season_full join. Players with no draft row have
+    # college IS NULL and are excluded by ILIKE.
+    if college:
+        where_clauses.append("college ILIKE ?")
+        params.append(f"%{college}%")
+
+    # Career-total min/max thresholds: HAVING-style filter implemented
+    # as a player_id IN (...) subquery on player_season_stats. Ratio
+    # stats (pass_cmp_pct, catch_rate) recompute as SUM(num) /
+    # NULLIF(SUM(den), 0) so divide-by-zero is impossible.
+    career_min_max_clauses, career_params = _career_min_max_subquery_clauses(
+        min_career_stats, max_career_stats
+    )
+    if career_min_max_clauses:
+        where_clauses.append(
+            "player_id IN (SELECT player_id FROM player_season_stats "
+            "GROUP BY player_id HAVING " + " AND ".join(career_min_max_clauses) + ")"
+        )
+        params.extend(career_params)
+
     # Build ORDER BY: primary rank_by DESC, then user-supplied
     # tiebreaks ASC (validated against allowlist), then season ASC
     # as the deterministic fallback.
@@ -536,6 +570,47 @@ _CAREER_RATIO_RANK_BY: dict[str, tuple[str, str]] = {
 }
 
 
+def _career_stat_expr(stat: str) -> str:
+    """SQL fragment for the player's career value of `stat`. Plain
+    SUM for raw columns; recomputed SUM(num)/NULLIF(SUM(den), 0) for
+    per-season ratio stats."""
+    if stat in _CAREER_RATIO_RANK_BY:
+        num, den = _CAREER_RATIO_RANK_BY[stat]
+        return f"CAST(SUM({num}) AS DOUBLE) / NULLIF(SUM({den}), 0)"
+    return f"SUM({stat})"
+
+
+def _career_min_max_subquery_clauses(
+    min_career_stats: dict[str, float] | None,
+    max_career_stats: dict[str, float] | None,
+) -> tuple[list[str], list]:
+    """Build HAVING-style clauses for a career-total filter. Used by
+    pos_topN, career_topN, and award_topN as the body of a
+    ``player_id IN (SELECT player_id FROM player_season_stats GROUP BY
+    player_id HAVING ...)`` subquery.
+
+    Each entry validates the stat against ``RANK_BY_ALLOWED`` (no SQL
+    injection) and emits ``<career_expr> >= ?`` or ``<= ?``. Returns
+    (clauses, params)."""
+    clauses: list[str] = []
+    params: list = []
+    for src, op, label in (
+        (min_career_stats, ">=", "min_career_stats"),
+        (max_career_stats, "<=", "max_career_stats"),
+    ):
+        if not src:
+            continue
+        for stat, val in src.items():
+            if stat not in RANK_BY_ALLOWED:
+                raise ValueError(
+                    f"unknown {label} column {stat!r}; allowed: "
+                    f"{sorted(RANK_BY_ALLOWED)}"
+                )
+            clauses.append(f"{_career_stat_expr(stat)} {op} ?")
+            params.append(val)
+    return clauses, params
+
+
 def career_topN(
     rank_by: str,
     *,
@@ -545,6 +620,9 @@ def career_topN(
     end: int | None = None,
     ever_won_award: list[str] | None = None,
     min_seasons: int | None = None,
+    college: str | None = None,
+    min_career_stats: dict[str, float] | None = None,
+    max_career_stats: dict[str, float] | None = None,
 ) -> tuple[str, list]:
     """Top-N players by *career-total* of ``rank_by`` summed across the
     seasons matching the (optional) filters.
@@ -614,11 +692,31 @@ def career_topN(
         )
         params.extend(ever_won_award)
 
+    # College filter via LEFT JOIN on draft_picks. Players without a
+    # draft row have d.college NULL and are excluded by ILIKE.
+    if college:
+        where.append("d.college ILIKE ?")
+        params.append(f"%{college}%")
+
+    # Career stat min/max thresholds — same HAVING-style subquery as
+    # pos_topN. Goes through the same helper so ratio stats recompute
+    # via SUM(num)/NULLIF(SUM(den), 0).
+    career_clauses, career_params = _career_min_max_subquery_clauses(
+        min_career_stats, max_career_stats
+    )
+    if career_clauses:
+        where.append(
+            "s.player_id IN (SELECT player_id FROM player_season_stats "
+            "GROUP BY player_id HAVING " + " AND ".join(career_clauses) + ")"
+        )
+        params.extend(career_params)
+
     where_sql = " AND ".join(where)
-    having_sql = ""
+    having_clauses: list[str] = []
     if min_seasons is not None:
-        having_sql = "HAVING COUNT(DISTINCT s.season) >= ?"
+        having_clauses.append("COUNT(DISTINCT s.season) >= ?")
         params.append(min_seasons)
+    having_sql = ("HAVING " + " AND ".join(having_clauses)) if having_clauses else ""
 
     # ``positions`` is the slash-joined set of positions the player
     # held across the qualifying seasons (alpha-sorted for stable
@@ -641,6 +739,7 @@ def career_topN(
                MAX(s.season)                                           AS last_season
         FROM   player_season_stats s
         JOIN   players p USING (player_id)
+        LEFT JOIN draft_picks d USING (player_id)
         WHERE  {where_sql}
         GROUP BY p.player_id, p.name
         {having_sql}
@@ -708,4 +807,121 @@ def awards_list(
         ORDER BY vw.season DESC, vw.award_type ASC,
                  COALESCE(vw.vote_finish, 1) ASC, vw.name ASC
     """
+    return sql, params
+
+
+# ---------------------------------------------------------------------------
+# Award totals — count of an award_type won across a player's career
+# ---------------------------------------------------------------------------
+
+def award_topN(
+    award_type: str,
+    *,
+    n: int = 10,
+    position: str | None = None,
+    college: str | None = None,
+    min_career_stats: dict[str, float] | None = None,
+    max_career_stats: dict[str, float] | None = None,
+) -> tuple[str, list]:
+    """Top-N players by career *count* of a single award type.
+
+    Outright winners only — vote_finish=1 for vote-ranked awards
+    (MVP/OPOY/...) plus all rows for binary awards (PB, AP_FIRST,
+    AP_SECOND, WPMOY) which carry NULL vote_finish. Finalist credit
+    is intentionally excluded.
+
+    Filters compose:
+      - ``position`` scopes to players whose stats include any season
+        at that position (or alias group: SAFETY, DB, LB, DL, FLEX).
+      - ``college`` substring-matches draft_picks.college.
+      - ``min_career_stats`` / ``max_career_stats`` apply HAVING-style
+        thresholds on career SUMs. Ratio stats (pass_cmp_pct,
+        catch_rate) recompute as SUM(num)/NULLIF(SUM(den), 0) so
+        divide-by-zero is impossible.
+
+    Output columns: ``name, positions, teams, college, award_count,
+    seasons``.
+    """
+    if award_type not in AWARD_TYPES_ALLOWED:
+        raise ValueError(
+            f"unknown award_type {award_type!r}; allowed: "
+            f"{sorted(AWARD_TYPES_ALLOWED)}"
+        )
+
+    where: list[str] = [
+        "pa.award_type = ?",
+        "(pa.vote_finish = 1 OR pa.vote_finish IS NULL)",
+    ]
+    params: list = [award_type]
+
+    # Position via EXISTS on player_season_stats. Award winners with
+    # no stats row (linemen WPMOY etc.) are excluded by the EXISTS,
+    # which is correct since we can't establish their position.
+    if position and position.upper() != "ALL":
+        if position.upper() in POSITION_ALIASES:
+            alias_set = POSITION_ALIASES[position.upper()]
+            if alias_set is not None:
+                ph = ",".join(["?"] * len(alias_set))
+                where.append(
+                    f"EXISTS (SELECT 1 FROM player_season_stats ps "
+                    f"WHERE ps.player_id = pa.player_id "
+                    f"AND ps.position IN ({ph}))"
+                )
+                params.extend(alias_set)
+        else:
+            where.append(
+                "EXISTS (SELECT 1 FROM player_season_stats ps "
+                "WHERE ps.player_id = pa.player_id "
+                "AND ps.position = ?)"
+            )
+            params.append(position)
+
+    if college:
+        where.append(
+            "EXISTS (SELECT 1 FROM draft_picks d "
+            "WHERE d.player_id = pa.player_id "
+            "AND d.college ILIKE ?)"
+        )
+        params.append(f"%{college}%")
+
+    career_clauses, career_params = _career_min_max_subquery_clauses(
+        min_career_stats, max_career_stats
+    )
+    if career_clauses:
+        where.append(
+            "pa.player_id IN (SELECT player_id FROM player_season_stats "
+            "GROUP BY player_id HAVING " + " AND ".join(career_clauses) + ")"
+        )
+        params.extend(career_params)
+
+    where_sql = " AND ".join(where)
+    # Correlated subqueries reference p.player_id (which is in GROUP BY)
+    # rather than pa.player_id (which isn't), so DuckDB resolves the
+    # outer reference cleanly. p.player_id == pa.player_id by virtue
+    # of the JOIN ... USING (player_id).
+    sql = f"""
+        SELECT  p.name                                          AS name,
+                (SELECT STRING_AGG(DISTINCT ps.position, '/' ORDER BY ps.position)
+                 FROM   player_season_stats ps
+                 WHERE  ps.player_id = p.player_id)             AS positions,
+                (SELECT STRING_AGG(team, ',' ORDER BY first_season)
+                 FROM (
+                     SELECT ps.team, MIN(ps.season) AS first_season
+                     FROM   player_season_stats ps
+                     WHERE  ps.player_id = p.player_id
+                     GROUP BY ps.team
+                 ))                                             AS teams,
+                (SELECT d.college FROM draft_picks d
+                 WHERE  d.player_id = p.player_id)              AS college,
+                COUNT(*)                                        AS award_count,
+                STRING_AGG(CAST(pa.season AS TEXT), ','
+                           ORDER BY pa.season)                  AS award_seasons
+        FROM    player_awards pa
+        JOIN    players p USING (player_id)
+        WHERE   {where_sql}
+        GROUP BY p.player_id, p.name
+        ORDER BY award_count DESC, p.name ASC
+        LIMIT  ?
+    """
+    params.append(n)
     return sql, params

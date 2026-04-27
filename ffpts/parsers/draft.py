@@ -41,6 +41,9 @@ def parse_draft(html: str, season: int) -> list[dict]:
         pick = _coerce_int(raw.get("draft_pick"))
         if round_ is None or pick is None:
             continue
+        # PFR's college cell can be empty for older / international /
+        # never-played picks. Empty string → None for clean nulls in DB.
+        college = (raw.get("college_id") or "").strip() or None
         rows.append(
             {
                 "player_id":    f"pfr:{slug}",
@@ -50,6 +53,7 @@ def parse_draft(html: str, season: int) -> list[dict]:
                 "overall_pick": pick,
                 "team":         raw.get("team"),
                 "position":     raw.get("pos"),
+                "college":      college,
             }
         )
     return rows
