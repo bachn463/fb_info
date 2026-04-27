@@ -755,6 +755,96 @@ def test_ever_won_unknown_label_raises():
         pos_topN("QB", ever_won_award=["BEST_HAIR"])
 
 
+def test_drafted_by_filters_to_team_that_drafted_player(db):
+    """--drafted-by uses draft_team, not the team the player played for."""
+    db.execute("INSERT INTO players (player_id, name) VALUES "
+               "('p1','DAL Pick'), ('p2','PIT Pick')")
+    db.execute(
+        "INSERT INTO draft_picks (player_id, year, round, overall_pick, team) VALUES "
+        "('p1', 2010, 1, 5, 'DAL'),"
+        "('p2', 2010, 1, 5, 'PIT')"
+    )
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES "
+        # Both players' stats season is on a DIFFERENT team than they were drafted.
+        "('p1', 2015, 'NYG', 'WR', 200),"
+        "('p2', 2015, 'CIN', 'WR', 200)"
+    )
+    sql, params = pos_topN("WR", n=10, rank_by="fpts_ppr", drafted_by="DAL")
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    assert names == ["DAL Pick"]
+
+
+def test_drafted_by_excludes_undrafted(db):
+    db.execute("INSERT INTO players (player_id, name) VALUES ('u', 'Undrafted')")
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) "
+        "VALUES ('u', 2010, 'DAL', 'WR', 999)"
+    )
+    sql, params = pos_topN("WR", rank_by="fpts_ppr", drafted_by="DAL")
+    rows = db.execute(sql, params).fetchall()
+    assert rows == []
+
+
+def test_tiebreak_by_breaks_ties_in_specified_order(db):
+    """When primary rank_by ties, tiebreak_by controls the secondary
+    sort. Three players with identical fpts_ppr but different
+    draft_year — sorting by draft_year ASC puts earliest draft first."""
+    db.execute("INSERT INTO players (player_id, name) VALUES "
+               "('a','Drafted 2005'),('b','Drafted 2010'),('c','Drafted 2015')")
+    db.execute(
+        "INSERT INTO draft_picks (player_id, year, round, overall_pick, team) VALUES "
+        "('a', 2005, 1, 1, 'NYG'),"
+        "('b', 2010, 1, 1, 'NYG'),"
+        "('c', 2015, 1, 1, 'NYG')"
+    )
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES "
+        "('a', 2018, 'NYG', 'WR', 250.0),"
+        "('b', 2018, 'NYG', 'WR', 250.0),"
+        "('c', 2018, 'NYG', 'WR', 250.0)"
+    )
+    sql, params = pos_topN(
+        "WR", n=10, rank_by="fpts_ppr", team="NYG",
+        tiebreak_by=["draft_year"],
+    )
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    assert names == ["Drafted 2005", "Drafted 2010", "Drafted 2015"]
+
+
+def test_tiebreak_by_multi_column(db):
+    """Multi-column tiebreaks apply in order: primary, then first
+    tiebreak, then second tiebreak."""
+    db.execute("INSERT INTO players (player_id, name) VALUES "
+               "('a','Same yr early rd'),"
+               "('b','Same yr later rd'),"
+               "('c','Earlier yr')")
+    db.execute(
+        "INSERT INTO draft_picks (player_id, year, round, overall_pick, team) VALUES "
+        "('a', 2010, 1, 1, 'NYG'),"
+        "('b', 2010, 7, 200, 'NYG'),"
+        "('c', 2008, 1, 1, 'NYG')"
+    )
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES "
+        "('a', 2015, 'NYG', 'WR', 100.0),"
+        "('b', 2015, 'NYG', 'WR', 100.0),"
+        "('c', 2015, 'NYG', 'WR', 100.0)"
+    )
+    sql, params = pos_topN(
+        "WR", n=10, rank_by="fpts_ppr", team="NYG",
+        tiebreak_by=["draft_year", "draft_round"],
+    )
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    # Earlier year wins first; within same year, lower round wins.
+    assert names == ["Earlier yr", "Same yr early rd", "Same yr later rd"]
+
+
+def test_tiebreak_by_unknown_column_raises():
+    with pytest.raises(ValueError):
+        pos_topN("WR", tiebreak_by=["DROP_TABLE"])
+
+
 def test_no_filters_unchanged_column_order_backward_compat(db):
     """Backward-compat sanity: pos_topN with no new filters returns
     the same 8 columns in the same order as before C6."""

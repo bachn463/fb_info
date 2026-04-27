@@ -232,6 +232,20 @@ def ask_pos_top(
         help="Filter to players drafted in or before this year "
              "(inclusive). Excludes undrafted players.",
     ),
+    drafted_by: str | None = typer.Option(
+        None, "--drafted-by",
+        help="Filter to players drafted by this team code (e.g. "
+             "'DAL', 'PIT'). Different from --team (the team they "
+             "actually played for that season).",
+    ),
+    tiebreak_by: list[str] | None = typer.Option(
+        None, "--tiebreak-by",
+        help="Secondary ASC sort columns (when the primary --rank-by "
+             "ties). Repeatable. Allowed: any rank-eligible stat plus "
+             "draft_year, draft_round, draft_overall_pick, position, "
+             "season, age, name, team. Example: --tiebreak-by "
+             "draft_year --tiebreak-by draft_round.",
+    ),
     min_stat: list[str] | None = typer.Option(
         None, "--min-stat",
         help="Stat threshold of the form col=value. Repeatable. "
@@ -303,6 +317,8 @@ def ask_pos_top(
         ever_won_award=ever_won if ever_won else None,
         rookie_only=rookie_only,
         draft_start=draft_start, draft_end=draft_end,
+        drafted_by=drafted_by,
+        tiebreak_by=tiebreak_by if tiebreak_by else None,
         min_stats=min_stats_dict if min_stats_dict else None,
         max_stats=max_stats_dict if max_stats_dict else None,
     )
@@ -455,6 +471,8 @@ def trivia_play(
     rookie_only: bool = typer.Option(False, "--rookie-only/--no-rookie-only"),
     draft_start: int | None = typer.Option(None, "--draft-start"),
     draft_end: int | None = typer.Option(None, "--draft-end"),
+    drafted_by: str | None = typer.Option(None, "--drafted-by"),
+    tiebreak_by: list[str] | None = typer.Option(None, "--tiebreak-by"),
     min_stat: list[str] | None = typer.Option(None, "--min-stat"),
     max_stat: list[str] | None = typer.Option(None, "--max-stat"),
     unique: bool = typer.Option(
@@ -506,6 +524,8 @@ def trivia_play(
         ever_won_award=ever_won if ever_won else None,
         rookie_only=rookie_only,
         draft_start=draft_start, draft_end=draft_end,
+        drafted_by=drafted_by,
+        tiebreak_by=tiebreak_by if tiebreak_by else None,
         min_stats=min_stats_dict if min_stats_dict else None,
         max_stats=max_stats_dict if max_stats_dict else None,
     )

@@ -167,6 +167,15 @@ AWARD_TYPES_ALLOWED: frozenset[str] = frozenset({
     "PB", "AP_FIRST", "AP_SECOND",
 })
 
+# Columns allowed as ORDER BY tiebreakers. Superset of RANK_BY_ALLOWED
+# plus draft and identity columns that make sense for stable secondary
+# sorts. All applied ASC; if you want DESC, use the column as the
+# primary rank_by instead.
+TIEBREAK_BY_ALLOWED: frozenset[str] = RANK_BY_ALLOWED | frozenset({
+    "draft_year", "draft_round", "draft_overall_pick",
+    "position", "season", "age", "name", "team",
+})
+
 
 def pos_topN(
     position: str,
@@ -190,6 +199,8 @@ def pos_topN(
     draft_start: int | None = None,
     draft_end: int | None = None,
     ever_won_award: list[str] | None = None,
+    drafted_by: str | None = None,
+    tiebreak_by: list[str] | None = None,
 ) -> tuple[str, list]:
     """Top-N player-seasons at a given position, ranked by ``rank_by``.
 
@@ -254,6 +265,17 @@ def pos_topN(
       one of the listed awards — independent of which season we're
       ranking. Composes with ``has_award`` (year-of-win filter).
       Same allowlist + win-only semantics as ``has_award``.
+    - ``drafted_by``: filter to player-seasons where the player was
+      drafted by this team. Compared as uppercase against
+      ``draft_team`` on the joined draft_picks row. Excludes
+      undrafted players.
+    - ``tiebreak_by``: list of column names used as secondary ASC
+      sort criteria when multiple rows share the primary ``rank_by``
+      value. Validated against ``TIEBREAK_BY_ALLOWED``. Default tie
+      resolution is just ``season ASC`` (deterministic, earliest
+      year first); ``tiebreak_by`` inserts your columns *before*
+      that fallback. Useful for "rank by fpts_ppr, break ties by
+      draft_year then position".
 
     Returns rows of (name, team, season, position, rank_value,
     draft_round, draft_year, draft_overall_pick) — column set is
@@ -370,6 +392,12 @@ def pos_topN(
         where_clauses.append("draft_year <= ?")
         params.append(draft_end)
 
+    # Drafted-by-team filter — looks at the team that drafted the
+    # player (draft_team), not the team they played for.
+    if drafted_by:
+        where_clauses.append("draft_team = ?")
+        params.append(drafted_by.upper())
+
     # Career-award filter: player won this award at any season.
     # Same EXISTS pattern as has_award but without the season match.
     if ever_won_award:
@@ -414,6 +442,29 @@ def pos_topN(
             where_clauses.append(f"{col} <= ?")
             params.append(val)
 
+    # Build ORDER BY: primary rank_by DESC, then user-supplied
+    # tiebreaks ASC (validated against allowlist), then season ASC
+    # as the deterministic fallback.
+    tiebreak_cols: list[str] = []
+    if tiebreak_by:
+        for col in tiebreak_by:
+            if col not in TIEBREAK_BY_ALLOWED:
+                raise ValueError(
+                    f"unknown tiebreak_by column {col!r}; allowed: "
+                    f"{sorted(TIEBREAK_BY_ALLOWED)}"
+                )
+            tiebreak_cols.append(col)
+    order_clauses = [f"{rank_by} DESC"]
+    order_clauses.extend(f"{c} ASC" for c in tiebreak_cols)
+    order_clauses.append("season ASC")
+    order_sql = ", ".join(order_clauses)
+    # In the outer SELECT (post-CTE), `rank_value` is the alias for
+    # the rank_by column, so we re-use that for clarity.
+    outer_order_clauses = ["rank_value DESC"]
+    outer_order_clauses.extend(f"{c} ASC" for c in tiebreak_cols)
+    outer_order_clauses.append("season ASC")
+    outer_order_sql = ", ".join(outer_order_clauses)
+
     where_sql = " AND ".join(where_clauses)
     if unique:
         # Pick the best season per player_id (inside the same filter
@@ -430,7 +481,7 @@ def pos_topN(
                        draft_overall_pick,
                        ROW_NUMBER() OVER (
                            PARTITION BY player_id
-                           ORDER BY {rank_by} DESC, season ASC
+                           ORDER BY {order_sql}
                        ) AS __rn
                 FROM   v_player_season_full
                 WHERE  {where_sql}
@@ -439,7 +490,7 @@ def pos_topN(
                    draft_round, draft_year, draft_overall_pick
             FROM   ranked
             WHERE  __rn = 1
-            ORDER BY rank_value DESC, season ASC
+            ORDER BY {outer_order_sql}
             LIMIT  ?
         """
     else:
@@ -454,7 +505,7 @@ def pos_topN(
                    draft_overall_pick
             FROM   v_player_season_full
             WHERE  {where_sql}
-            ORDER BY {rank_by} DESC, season ASC
+            ORDER BY {order_sql}
             LIMIT  ?
         """
     params.append(n)
