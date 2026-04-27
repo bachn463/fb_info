@@ -32,48 +32,48 @@ python3 -m venv .venv
 
 # Build the DB (1970–2025 ≈ 56 years × 9 PFR pages at the polite 5s
 # throttle = ~45 minutes the first time, cached forever after).
-ffpts build --start 1970 --end 2025
+fb_info build --start 1970 --end 2025
 
 # Named query helpers:
-ffpts ask flex-top --round 3 --n 10 --scoring ppr
-ffpts ask div-int  --division "NFC North" --start 1990 --end 2005 --mode historical
-ffpts ask pos-top  --position QB --rank-by pass_yds --draft-rounds 4,5
-ffpts ask pos-top  --position WR --rank-by rec_yds  --team SF
-ffpts ask pos-top  --position ALL --rank-by def_int --conference NFC
-ffpts ask pos-top  --position ALL --first-name-contains z --rank-by fpts_ppr
-ffpts ask pos-top  --position QB --rank-by pass_yds --unique --n 10
-ffpts ask pos-top  --position FLEX --draft-rounds undrafted
-ffpts ask pos-top  --position QB   --draft-rounds "4,5,undrafted"
+fb_info ask flex-top --round 3 --n 10 --scoring ppr
+fb_info ask div-int  --division "NFC North" --start 1990 --end 2005 --mode historical
+fb_info ask pos-top  --position QB --rank-by pass_yds --draft-rounds 4,5
+fb_info ask pos-top  --position WR --rank-by rec_yds  --team SF
+fb_info ask pos-top  --position ALL --rank-by def_int --conference NFC
+fb_info ask pos-top  --position ALL --first-name-contains z --rank-by fpts_ppr
+fb_info ask pos-top  --position QB --rank-by pass_yds --unique --n 10
+fb_info ask pos-top  --position FLEX --draft-rounds undrafted
+fb_info ask pos-top  --position QB   --draft-rounds "4,5,undrafted"
 
 # Awards filters (NEW):
-ffpts ask pos-top --position FLEX --has-award OROY --rookie-only
-ffpts ask pos-top --position QB   --has-award MVP --start 2010 --end 2024
-ffpts ask pos-top --position ALL  --has-award AP_FIRST --rank-by def_sacks
+fb_info ask pos-top --position FLEX --has-award OROY --rookie-only
+fb_info ask pos-top --position QB   --has-award MVP --start 2010 --end 2024
+fb_info ask pos-top --position ALL  --has-award AP_FIRST --rank-by def_sacks
 
 # Stat threshold filters (NEW):
-ffpts ask pos-top --position RB --rank-by rush_att --n 5 \
+fb_info ask pos-top --position RB --rank-by rush_att --n 5 \
     --team PIT --start 1990 --end 2020 --max-stat rush_yds=999
 #                       ^ "high-volume / low-yardage Steelers RBs"
 
 # Display flags (NEW, opt-in; default invocation columns unchanged):
-ffpts ask pos-top --position QB --rank-by fpts_ppr --has-award MVP \
+fb_info ask pos-top --position QB --rank-by fpts_ppr --has-award MVP \
     --show-awards --show-context
 
 # Trivia game (NEW):
-ffpts trivia play --rank-by rush_yds --n 5 \
+fb_info trivia play --rank-by rush_yds --n 5 \
     --position RB --team PIT --start 1990 --end 2020 --max-stat rush_yds=999
 
 # Or any raw SQL:
-ffpts query "SELECT name, fpts_ppr FROM v_player_season_full
+fb_info query "SELECT name, fpts_ppr FROM v_player_season_full
              WHERE position = 'WR' AND season = 2023
              ORDER BY fpts_ppr DESC LIMIT 5"
-ffpts query "SELECT name, season FROM v_award_winners
+fb_info query "SELECT name, season FROM v_award_winners
              WHERE  award_type = 'MVP' AND vote_finish = 1
                AND  season BETWEEN 1980 AND 1990
              ORDER BY season"
 ```
 
-`ffpts build` is idempotent — re-running for the same year range
+`fb_info build` is idempotent — re-running for the same year range
 replaces those rows in one transaction per season.
 
 ## Default query unit
@@ -86,12 +86,12 @@ player (their best season).
 
 ## Trivia game
 
-`ffpts trivia play` accepts the **same filter flags as
-`ffpts ask pos-top`**, picks the answer set via `pos_topN` with
+`fb_info trivia play` accepts the **same filter flags as
+`fb_info ask pos-top`**, picks the answer set via `pos_topN` with
 `--unique` defaulting to True, then runs an interactive REPL:
 
 ```
-$ ffpts trivia play --rank-by rush_yds --n 5 --position RB \
+$ fb_info trivia play --rank-by rush_yds --n 5 --position RB \
       --start 1985 --end 1985
 
 Top 5 player-seasons by rush_yds. Type a name (substring OK).
@@ -105,17 +105,22 @@ Commands: `give up`, `hint`, `quit`.
 >>> marcus allen
   Correct! #1 Marcus Allen, 1985 (RAI, rush_yds=1759).
 >>> give up
-  Remaining:
-    #4: James Wilder (TAM 1985, rush_yds=1300)
-    #5: Curt Warner (SEA 1985, rush_yds=1094)
+
+Final ranked list:
+  ✓ #1: Marcus Allen (RAI 1985, rush_yds=1759)
+  ✓ #2: Gerald Riggs (ATL 1985, rush_yds=1719)
+  ✓ #3: Walter Payton (CHI 1985, rush_yds=1551)
+  ✗ #4: James Wilder (TAM 1985, rush_yds=1300)
+  ✗ #5: Curt Warner (SEA 1985, rush_yds=1094)
 
 Final score: 3 / 5 in 4 guesses.
 ```
 
-Special inputs: `give up` reveals remaining + final score; `hint`
-prints a clue (team / season / position / season-of-career); `quit`
-exits silently. Match logic is case-insensitive substring; ambiguous
-matches prompt for more characters.
+Every exit path (`give up`, `quit`, or finishing with all answers)
+prints the full ranked list with ✓ / ✗ markers per row, plus the
+final score. `hint` prints a clue (team / season / position /
+season-of-career). Match logic is case-insensitive substring;
+ambiguous matches prompt for more characters.
 
 ## Schema
 
@@ -201,7 +206,7 @@ your first build:
    ```
 5. Run the build:
    ```bash
-   ffpts build --start 1970 --end 2025
+   fb_info build --start 1970 --end 2025
    ```
    The scraper sleeps ≥ 5 s between live PFR fetches to be polite. A
    full 1970–2025 backfill is ~45 minutes the first time. Cache hits
@@ -269,5 +274,5 @@ ffpts/
 ├── pipeline.py           build(seasons, ...) — all years through PFR
 ├── supplemental_drafts.py hand-encoded supp + pre-merger draft picks
 ├── queries.py            named helpers + filter builder; player-season default
-└── cli.py                `ffpts build | query | ask | trivia`
+└── cli.py                `fb_info build | query | ask | trivia`
 ```

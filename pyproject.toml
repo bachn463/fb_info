@@ -37,7 +37,7 @@ dev = [
 ]
 
 [project.scripts]
-ffpts = "ffpts.cli:app"
+fb_info = "ffpts.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["ffpts*"]

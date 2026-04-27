@@ -1,15 +1,15 @@
-"""Command-line entry point: ``ffpts``.
+"""Command-line entry point: ``fb_info``.
 
 Three commands:
 
-- ``ffpts build --start YEAR --end YEAR`` runs the PFR->DuckDB
+- ``fb_info build --start YEAR --end YEAR`` runs the PFR->DuckDB
   pipeline for the given seasons (default DB at data/ff.duckdb).
   Requires ``data/pfr_session.json`` set up with a browser-cookie
   session — see README "Pre-1999 PFR backfill" (now applies to all
   years, not just pre-1999).
-- ``ffpts query "<SQL>"`` runs a raw SQL statement against the DB and
+- ``fb_info query "<SQL>"`` runs a raw SQL statement against the DB and
   prints the result as a tabulated table.
-- ``ffpts ask <name> [opts...]`` runs a named helper from
+- ``fb_info ask <name> [opts...]`` runs a named helper from
   ``ffpts.queries``. Supported helpers and their flags map directly
   to the helper signatures.
 """
@@ -40,7 +40,7 @@ def _open_db(db_path: str | Path) -> duckdb.DuckDBPyConnection:
     db_path = Path(db_path)
     if not db_path.exists():
         typer.echo(
-            f"DB not found at {db_path}. Run `ffpts build --start YEAR --end YEAR` first.",
+            f"DB not found at {db_path}. Run `fb_info build --start YEAR --end YEAR` first.",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -260,14 +260,14 @@ def ask_pos_top(
     All filter flags combine — pass any subset to scope the result.
     Examples:
 
-        ffpts ask pos-top --position QB --rank-by pass_yds --draft-rounds 4,5
-        ffpts ask pos-top --position WR --rank-by rec_yds --team SF
-        ffpts ask pos-top --position ALL --rank-by def_int --division "NFC North"
-        ffpts ask pos-top --position ALL --first-name-contains z --rank-by fpts_ppr
-        ffpts ask pos-top --position FLEX --has-award OROY --rookie-only
-        ffpts ask pos-top --position RB --rank-by rush_att \\
+        fb_info ask pos-top --position QB --rank-by pass_yds --draft-rounds 4,5
+        fb_info ask pos-top --position WR --rank-by rec_yds --team SF
+        fb_info ask pos-top --position ALL --rank-by def_int --division "NFC North"
+        fb_info ask pos-top --position ALL --first-name-contains z --rank-by fpts_ppr
+        fb_info ask pos-top --position FLEX --has-award OROY --rookie-only
+        fb_info ask pos-top --position RB --rank-by rush_att \\
             --team PIT --start 1990 --end 2020 --max-stat rush_yds=999
-        ffpts ask pos-top --position QB --rank-by fpts_ppr \\
+        fb_info ask pos-top --position QB --rank-by fpts_ppr \\
             --has-award MVP --show-awards --show-context
     """
     rounds_list: list[int | str] | None = None
@@ -465,12 +465,13 @@ def trivia_play(
     ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
 ) -> None:
-    """Top-N trivia game. Same filters as `ffpts ask pos-top` plus an
+    """Top-N trivia game. Same filters as `fb_info ask pos-top` plus an
     interactive guessing loop.
 
     Type a player name (case-insensitive partial match). Special
-    inputs: ``give up`` to reveal the rest, ``hint`` for a clue,
-    ``quit`` to exit silently.
+    inputs: ``give up`` to print the full ranked list and exit;
+    ``hint`` for a clue; ``quit`` to exit (also prints the ranked
+    list — the user always leaves with the answers visible).
     """
     rounds_list: list[int | str] | None = None
     if draft_rounds:
