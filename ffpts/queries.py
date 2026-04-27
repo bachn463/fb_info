@@ -514,3 +514,135 @@ def pos_topN(
         """
     params.append(n)
     return sql, params
+
+
+# ---------------------------------------------------------------------------
+# Career totals — sums across all qualifying seasons for a player
+# ---------------------------------------------------------------------------
+
+def career_topN(
+    rank_by: str,
+    *,
+    n: int = 10,
+    position: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    ever_won_award: list[str] | None = None,
+    min_seasons: int | None = None,
+) -> tuple[str, list]:
+    """Top-N players by *career-total* of ``rank_by`` summed across the
+    seasons matching the (optional) filters.
+
+    The position filter scopes the SUM to seasons where the player
+    played that position — so career-as-QB totals exclude any
+    one-off RB seasons. Default (no position filter) sums all seasons.
+
+    Output columns: ``name, career_total, seasons, first_season,
+    last_season``.
+    """
+    if rank_by not in RANK_BY_ALLOWED:
+        raise ValueError(
+            f"unknown rank_by column {rank_by!r}; allowed: "
+            f"{sorted(RANK_BY_ALLOWED)}"
+        )
+
+    where: list[str] = [f"s.{rank_by} IS NOT NULL"]
+    params: list = []
+    if start is not None:
+        where.append("s.season >= ?")
+        params.append(start)
+    if end is not None:
+        where.append("s.season <= ?")
+        params.append(end)
+
+    if position and position.upper() != "ALL":
+        if position.upper() in POSITION_ALIASES:
+            alias_set = POSITION_ALIASES[position.upper()]
+            if alias_set is not None:
+                ph = ",".join(["?"] * len(alias_set))
+                where.append(f"s.position IN ({ph})")
+                params.extend(alias_set)
+        else:
+            where.append("s.position = ?")
+            params.append(position)
+
+    if ever_won_award:
+        for a in ever_won_award:
+            if a not in AWARD_TYPES_ALLOWED:
+                raise ValueError(
+                    f"unknown ever_won_award {a!r}; allowed: "
+                    f"{sorted(AWARD_TYPES_ALLOWED)}"
+                )
+        ph = ",".join(["?"] * len(ever_won_award))
+        where.append(
+            f"EXISTS (SELECT 1 FROM player_awards pa WHERE "
+            f"pa.player_id = s.player_id AND pa.award_type IN ({ph}))"
+        )
+        params.extend(ever_won_award)
+
+    where_sql = " AND ".join(where)
+    having_sql = ""
+    if min_seasons is not None:
+        having_sql = "HAVING COUNT(DISTINCT s.season) >= ?"
+        params.append(min_seasons)
+
+    sql = f"""
+        SELECT p.name                    AS name,
+               SUM(s.{rank_by})          AS career_total,
+               COUNT(DISTINCT s.season)  AS seasons,
+               MIN(s.season)             AS first_season,
+               MAX(s.season)             AS last_season
+        FROM   player_season_stats s
+        JOIN   players p USING (player_id)
+        WHERE  {where_sql}
+        GROUP BY p.player_id, p.name
+        {having_sql}
+        ORDER BY career_total DESC NULLS LAST
+        LIMIT  ?
+    """
+    params.append(n)
+    return sql, params
+
+
+# ---------------------------------------------------------------------------
+# Awards listing
+# ---------------------------------------------------------------------------
+
+def awards_list(
+    *,
+    award_type: str | None = None,
+    season: int | None = None,
+    winners_only: bool = True,
+) -> tuple[str, list]:
+    """List rows from ``v_award_winners`` filtered by award type and/or
+    season.
+
+    ``winners_only=True`` (default) restricts to outright winners —
+    rows with ``vote_finish = 1`` for vote-ranked awards (MVP, OPOY,
+    DPOY, OROY, DROY, CPOY) plus all rows for binary awards (PB,
+    AP_FIRST, AP_SECOND, WPMOY) which carry NULL ``vote_finish``.
+    """
+    if award_type is not None and award_type not in AWARD_TYPES_ALLOWED:
+        raise ValueError(
+            f"unknown award_type {award_type!r}; allowed: "
+            f"{sorted(AWARD_TYPES_ALLOWED)}"
+        )
+    where: list[str] = []
+    params: list = []
+    if award_type is not None:
+        where.append("award_type = ?")
+        params.append(award_type)
+    if season is not None:
+        where.append("season = ?")
+        params.append(season)
+    if winners_only:
+        where.append("(vote_finish = 1 OR vote_finish IS NULL)")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    sql = f"""
+        SELECT season, award_type, name, vote_finish
+        FROM   v_award_winners
+        {where_sql}
+        ORDER BY season DESC, award_type ASC,
+                 COALESCE(vote_finish, 1) ASC, name ASC
+    """
+    return sql, params

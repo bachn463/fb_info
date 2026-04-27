@@ -23,7 +23,15 @@ import typer
 
 from ffpts.db import DEFAULT_DB_PATH, init_db
 from ffpts.pipeline import build as run_build
-from ffpts.queries import flex_topN_by_draft_round, most_def_int_by_division, pos_topN
+from ffpts.queries import (
+    AWARD_TYPES_ALLOWED,
+    RANK_BY_ALLOWED,
+    awards_list,
+    career_topN,
+    flex_topN_by_draft_round,
+    most_def_int_by_division,
+    pos_topN,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -807,6 +815,392 @@ def _print_final_ranked_list(
             f"({row['team']} {row['season']}, "
             f"{rank_by}={_fmt_cell(row['rank_value'])})"
         )
+
+
+# ---------------------------------------------------------------------------
+# `ask records` — single-season all-time records dashboard
+# ---------------------------------------------------------------------------
+
+# Curated stat columns per category. Tuned to the ones fans actually
+# care about; not the full RANK_BY_ALLOWED set (which would make the
+# output noisy with 50+ rows).
+_RECORDS_OFFENSE = [
+    "pass_yds", "pass_td", "pass_cmp", "pass_rating",
+    "rush_yds", "rush_td", "rush_att",
+    "rec", "rec_yds", "rec_td", "targets",
+    "fpts_ppr", "fpts_half", "fpts_std",
+]
+_RECORDS_DEFENSE = [
+    "def_sacks", "def_int", "def_int_td",
+    "def_tackles_combined", "def_pass_def",
+    "def_fumbles_forced", "def_fumbles_rec",
+    "def_fumbles_rec_td", "def_safeties",
+]
+_RECORDS_SPECIAL = [
+    "fg_made", "fg_long", "xp_made",
+    "punts", "punt_yds", "punt_long",
+    "kr_yds", "kr_td", "pr_yds", "pr_td",
+]
+_RECORDS_CATEGORIES: dict[str, list[str]] = {
+    "offense": _RECORDS_OFFENSE,
+    "defense": _RECORDS_DEFENSE,
+    "special": _RECORDS_SPECIAL,
+    "all":     _RECORDS_OFFENSE + _RECORDS_DEFENSE + _RECORDS_SPECIAL,
+}
+
+
+@ask_app.command("records")
+def ask_records(
+    category: str = typer.Option(
+        "all", "--category",
+        help="offense | defense | special | all (default).",
+    ),
+    n: int = typer.Option(
+        1, "--n",
+        help="Top-N per stat. Default 1 (just the record holder).",
+    ),
+    start: int | None = typer.Option(None, "--start"),
+    end: int | None = typer.Option(None, "--end"),
+    position: str = typer.Option(
+        "ALL", "--position",
+        help='Optional position scope. "ALL" (default) = no filter.',
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+) -> None:
+    """Single-season records: top-N for each major stat, side by side.
+
+    Walks a curated list of stat columns, runs a top-N query for each,
+    and prints all results as one labelled table. Defaults to top-1 per
+    stat ("the record holder for X is..."); pass --n 3 to see runners-up.
+    """
+    if category not in _RECORDS_CATEGORIES:
+        typer.echo(
+            f"--category must be one of "
+            f"{sorted(_RECORDS_CATEGORIES)}, got {category!r}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    stats = _RECORDS_CATEGORIES[category]
+
+    con = _open_db(db)
+    try:
+        rows: list[tuple] = []
+        for stat in stats:
+            sql, params = pos_topN(
+                position, n=n, rank_by=stat,
+                start=start, end=end, unique=False,
+            )
+            try:
+                cur = con.execute(sql, params)
+                results = cur.fetchall()
+            except Exception:
+                # A few stats have no data for some position scopes
+                # (e.g. fpts_* with position=ALL still works, but if
+                # the user passed --position QB we just skip empty).
+                continue
+            cols = [d[0] for d in cur.description]
+            value_idx = cols.index("rank_value")
+            name_idx = cols.index("name")
+            team_idx = cols.index("team")
+            season_idx = cols.index("season")
+            pos_idx = cols.index("position")
+            for r in results:
+                rows.append((
+                    stat,
+                    r[name_idx],
+                    r[pos_idx],
+                    r[team_idx],
+                    r[season_idx],
+                    r[value_idx],
+                ))
+    finally:
+        con.close()
+
+    _print_rows(rows, ["stat", "name", "pos", "team", "season", "value"])
+
+
+# ---------------------------------------------------------------------------
+# `ask career` — career totals
+# ---------------------------------------------------------------------------
+
+@ask_app.command("career")
+def ask_career(
+    rank_by: str = typer.Option(
+        "fpts_ppr", "--rank-by",
+        help="Stat column to sum across seasons.",
+    ),
+    n: int = typer.Option(10, "--n"),
+    position: str = typer.Option(
+        "ALL", "--position",
+        help='Position scope (sums only seasons at this position). '
+             '"ALL" (default) = all seasons.',
+    ),
+    start: int | None = typer.Option(None, "--start"),
+    end: int | None = typer.Option(None, "--end"),
+    ever_won: list[str] | None = typer.Option(
+        None, "--ever-won",
+        help="Restrict to players who won this award at any point. "
+             "Repeatable.",
+    ),
+    min_seasons: int | None = typer.Option(
+        None, "--min-seasons",
+        help="Require at least this many qualifying seasons "
+             "(blocks one-year-wonders distorting the leaderboard).",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+) -> None:
+    """Top-N players by *career-total* of --rank-by.
+
+    Different unit-of-analysis from `ask` (which is player-season).
+    Career totals are summed across the seasons that match the
+    optional filters, then ranked.
+    """
+    sql, params = career_topN(
+        rank_by, n=n, position=position,
+        start=start, end=end,
+        ever_won_award=ever_won if ever_won else None,
+        min_seasons=min_seasons,
+    )
+    con = _open_db(db)
+    try:
+        cur = con.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        _print_rows(cur.fetchall(), cols)
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# `ask awards` — list winners by award type / season
+# ---------------------------------------------------------------------------
+
+@ask_app.command("awards")
+def ask_awards(
+    award: str | None = typer.Option(
+        None, "--award",
+        help="Award type to list. One of: " + ", ".join(sorted(AWARD_TYPES_ALLOWED)),
+    ),
+    season: int | None = typer.Option(
+        None, "--season",
+        help="Restrict to one season (e.g. 2023).",
+    ),
+    winners_only: bool = typer.Option(
+        True, "--winners-only/--include-finalists",
+        help="Default ON: outright winners only. Pass "
+             "--include-finalists to see runner-ups for vote-ranked "
+             "awards (MVP, OPOY, DPOY, OROY, DROY, CPOY).",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+) -> None:
+    """List award winners. Defaults to all awards across all seasons
+    (winners only); pass --award and/or --season to scope down."""
+    sql, params = awards_list(
+        award_type=award, season=season, winners_only=winners_only,
+    )
+    con = _open_db(db)
+    try:
+        cur = con.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        _print_rows(cur.fetchall(), cols)
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# `ask compare` — two-player head-to-head career summary
+# ---------------------------------------------------------------------------
+
+# Career stats shown side-by-side for `ask compare`. Same curated list
+# as `ask records` defense+offense+special so users see one row per stat.
+_COMPARE_STATS = (
+    _RECORDS_OFFENSE + _RECORDS_DEFENSE + _RECORDS_SPECIAL
+)
+
+
+def _resolve_player(con: duckdb.DuckDBPyConnection, name: str) -> tuple[str, str] | None:
+    """Resolve a name fragment to (player_id, exact_name).
+
+    Tries exact (case-insensitive) match first; falls back to substring
+    if exactly one substring match exists. Returns None if zero or
+    multiple matches and prints an error to stderr.
+    """
+    rows = con.execute(
+        "SELECT player_id, name FROM players WHERE LOWER(name) = LOWER(?)",
+        [name],
+    ).fetchall()
+    if len(rows) == 1:
+        return rows[0]
+    rows = con.execute(
+        "SELECT player_id, name FROM players WHERE LOWER(name) LIKE LOWER(?)",
+        [f"%{name}%"],
+    ).fetchall()
+    if len(rows) == 1:
+        return rows[0]
+    if len(rows) == 0:
+        typer.echo(f"  No player matches {name!r}.", err=True)
+        return None
+    sample = ", ".join(r[1] for r in rows[:5])
+    more = "..." if len(rows) > 5 else ""
+    typer.echo(
+        f"  {len(rows)} players match {name!r}: {sample}{more}. "
+        "Be more specific.",
+        err=True,
+    )
+    return None
+
+
+@ask_app.command("compare")
+def ask_compare(
+    player1: str = typer.Argument(..., help="First player name (substring OK)."),
+    player2: str = typer.Argument(..., help="Second player name (substring OK)."),
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+) -> None:
+    """Career head-to-head between two players.
+
+    Shows career totals for major offensive / defensive / special-teams
+    stats side-by-side, plus seasons played and best-single-season for
+    each player. Each player resolved via case-insensitive substring
+    match against the players table; ambiguous matches error out.
+    """
+    con = _open_db(db)
+    try:
+        r1 = _resolve_player(con, player1)
+        r2 = _resolve_player(con, player2)
+        if r1 is None or r2 is None:
+            raise typer.Exit(code=2)
+        pid1, name1 = r1
+        pid2, name2 = r2
+
+        agg_cols = ", ".join(f"SUM({c}) AS {c}" for c in _COMPARE_STATS)
+        meta = (
+            "COUNT(DISTINCT season)  AS seasons, "
+            "MIN(season)             AS first_season, "
+            "MAX(season)             AS last_season"
+        )
+        sql = f"SELECT {meta}, {agg_cols} FROM player_season_stats WHERE player_id = ?"
+        row1 = con.execute(sql, [pid1]).fetchone()
+        row2 = con.execute(sql, [pid2]).fetchone()
+
+        cols = ["seasons", "first_season", "last_season"] + list(_COMPARE_STATS)
+        d1 = dict(zip(cols, row1))
+        d2 = dict(zip(cols, row2))
+
+        rows = [(c, d1.get(c), d2.get(c)) for c in cols]
+        _print_rows(rows, ["stat", name1, name2])
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# `trivia daily` / `trivia random` — template-driven trivia
+# ---------------------------------------------------------------------------
+
+# Each template = a kwargs dict matching `pos_topN` parameters. The
+# trivia loop runs over the result like a normal `trivia play`. Curated
+# to produce non-empty answer sets for the canonical 1970-2025 build.
+_TRIVIA_TEMPLATES: list[dict] = [
+    {"rank_by": "rush_yds",  "n": 10, "position": "RB"},
+    {"rank_by": "rush_td",   "n": 10, "position": "RB"},
+    {"rank_by": "pass_yds",  "n": 10, "position": "QB"},
+    {"rank_by": "pass_td",   "n": 10, "position": "QB"},
+    {"rank_by": "rec_yds",   "n": 10, "position": "WR"},
+    {"rank_by": "rec",       "n": 10, "position": "WR"},
+    {"rank_by": "rec_td",    "n": 10, "position": "TE"},
+    {"rank_by": "fpts_ppr",  "n": 10, "position": "ALL"},
+    {"rank_by": "fpts_ppr",  "n": 10, "position": "FLEX"},
+    {"rank_by": "def_sacks", "n": 10, "position": "ALL", "start": 1982},
+    {"rank_by": "def_int",   "n": 10, "position": "ALL"},
+    {"rank_by": "fg_made",   "n": 10, "position": "K"},
+    {"rank_by": "rush_yds",  "n": 10, "position": "RB",
+     "has_award": ["MVP"]},
+    {"rank_by": "pass_yds",  "n": 10, "position": "QB",
+     "has_award": ["MVP"]},
+    {"rank_by": "rush_yds",  "n": 10, "position": "RB",
+     "rookie_only": True},
+    {"rank_by": "rec_yds",   "n": 10, "position": "WR",
+     "rookie_only": True},
+    {"rank_by": "pass_yds",  "n": 10, "position": "QB",
+     "rookie_only": True},
+]
+
+
+def _run_template_trivia(template: dict, *, db: Path, label: str) -> None:
+    """Resolve a trivia template into an answer set and run the REPL."""
+    args = dict(template)
+    rank_by = args.pop("rank_by")
+    n = args.pop("n")
+    position = args.pop("position", "ALL")
+    sql, params = pos_topN(position, n=n, rank_by=rank_by, **args)
+
+    con = _open_db(db)
+    try:
+        cur = con.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        answers = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        con.close()
+
+    if not answers:
+        typer.echo("No matching player-seasons for this template.")
+        raise typer.Exit(code=0)
+
+    title = _build_trivia_title(
+        n=n, rank_by=rank_by, position=position,
+        start=args.get("start"), end=args.get("end"),
+        team=args.get("team"), division=args.get("division"),
+        conference=args.get("conference"),
+        first_name_contains=args.get("first_name_contains"),
+        last_name_contains=args.get("last_name_contains"),
+        has_award=args.get("has_award"),
+        ever_won=args.get("ever_won_award"),
+        rookie_only=args.get("rookie_only", False),
+        draft_start=args.get("draft_start"),
+        draft_end=args.get("draft_end"),
+        drafted_by=args.get("drafted_by"),
+        draft_rounds=args.get("draft_rounds"),
+        min_stats=args.get("min_stats"),
+        max_stats=args.get("max_stats"),
+        unique=args.get("unique", True),
+    )
+    typer.echo(f"({label})")
+    _run_trivia_loop(answers, rank_by=rank_by, title=title)
+
+
+@trivia_app.command("daily")
+def trivia_daily(
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+) -> None:
+    """Same trivia game for everyone today (deterministic by date).
+
+    Uses today's date as the RNG seed, so every player sees the same
+    template until midnight local time.
+    """
+    import datetime
+    import random
+
+    seed = int(datetime.date.today().isoformat().replace("-", ""))
+    rng = random.Random(seed)
+    template = rng.choice(_TRIVIA_TEMPLATES)
+    _run_template_trivia(template, db=db, label=f"daily for {datetime.date.today()}")
+
+
+@trivia_app.command("random")
+def trivia_random(
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+    seed: int | None = typer.Option(
+        None, "--seed",
+        help="Optional RNG seed for reproducibility (e.g. tests).",
+    ),
+) -> None:
+    """Random trivia template — different every call.
+
+    Pass --seed N to reproduce a specific game (handy for sharing).
+    """
+    import random
+
+    rng = random.Random(seed)
+    template = rng.choice(_TRIVIA_TEMPLATES)
+    _run_template_trivia(template, db=db, label="random")
 
 
 if __name__ == "__main__":
