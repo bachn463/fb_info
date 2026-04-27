@@ -204,6 +204,39 @@ def ask_pos_top(
              "--rank-by (within the active filters). Ties on the rank "
              "value resolve to the earlier season.",
     ),
+    has_award: list[str] | None = typer.Option(
+        None, "--has-award",
+        help="Filter to player-seasons where the player won this "
+             "award. Repeatable: --has-award MVP --has-award OROY = "
+             "MVP OR OROY. Allowed: MVP, OPOY, DPOY, OROY, DROY, "
+             "CPOY, WPMOY, PB, AP_FIRST, AP_SECOND.",
+    ),
+    rookie_only: bool = typer.Option(
+        False, "--rookie-only/--no-rookie-only",
+        help="Restrict to each player's first season we have data for "
+             "(approximately their rookie year).",
+    ),
+    min_stat: list[str] | None = typer.Option(
+        None, "--min-stat",
+        help="Stat threshold of the form col=value. Repeatable. "
+             'Example: --min-stat rush_yds=1000 --min-stat rec=50',
+    ),
+    max_stat: list[str] | None = typer.Option(
+        None, "--max-stat",
+        help="Stat ceiling of the form col=value. Repeatable. "
+             'Example: --max-stat rush_yds=999',
+    ),
+    show_awards: bool = typer.Option(
+        False, "--show-awards/--no-show-awards",
+        help="Append an `awards` column (comma-list of award_types "
+             'won that season, e.g. "PB,AP_FIRST,MVP") to the printed '
+             "table. Default off — column set unchanged.",
+    ),
+    show_context: bool = typer.Option(
+        False, "--show-context/--no-show-context",
+        help="Append `conference`, `division`, `franchise` columns "
+             "to the printed table. Default off.",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the DuckDB file."),
 ) -> None:
     """Top-N player-seasons at a position, ranked by a stat column.
@@ -215,6 +248,11 @@ def ask_pos_top(
         ffpts ask pos-top --position WR --rank-by rec_yds --team SF
         ffpts ask pos-top --position ALL --rank-by def_int --division "NFC North"
         ffpts ask pos-top --position ALL --first-name-contains z --rank-by fpts_ppr
+        ffpts ask pos-top --position FLEX --has-award OROY --rookie-only
+        ffpts ask pos-top --position RB --rank-by rush_att \\
+            --team PIT --start 1990 --end 2020 --max-stat rush_yds=999
+        ffpts ask pos-top --position QB --rank-by fpts_ppr \\
+            --has-award MVP --show-awards --show-context
     """
     rounds_list: list[int | str] | None = None
     if draft_rounds:
@@ -234,6 +272,10 @@ def ask_pos_top(
                     err=True,
                 )
                 raise typer.Exit(code=2)
+
+    min_stats_dict = _parse_stat_pairs(min_stat, "--min-stat")
+    max_stats_dict = _parse_stat_pairs(max_stat, "--max-stat")
+
     sql, params = pos_topN(
         position, n=n, rank_by=rank_by,
         start=start, end=end, draft_rounds=rounds_list,
@@ -241,14 +283,104 @@ def ask_pos_top(
         first_name_contains=first_name_contains,
         last_name_contains=last_name_contains,
         unique=unique,
+        has_award=has_award if has_award else None,
+        rookie_only=rookie_only,
+        min_stats=min_stats_dict if min_stats_dict else None,
+        max_stats=max_stats_dict if max_stats_dict else None,
     )
     con = _open_db(db)
     try:
         cur = con.execute(sql, params)
         cols = [d[0] for d in cur.description]
-        _print_rows(cur.fetchall(), cols)
+        rows = cur.fetchall()
+
+        if show_awards or show_context:
+            rows, cols = _augment_display(con, rows, cols, show_awards, show_context)
+
+        _print_rows(rows, cols)
     finally:
         con.close()
+
+
+def _parse_stat_pairs(
+    pairs: list[str] | None, flag_name: str
+) -> dict[str, float]:
+    """Parse repeated ``col=value`` flags into ``{col: value}``."""
+    out: dict[str, float] = {}
+    if not pairs:
+        return out
+    for pair in pairs:
+        if "=" not in pair:
+            typer.echo(
+                f"{flag_name} must be of the form col=value, got {pair!r}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        col, val = pair.split("=", 1)
+        col = col.strip()
+        try:
+            out[col] = float(val.strip())
+        except ValueError:
+            typer.echo(
+                f"{flag_name} value must be numeric, got {val!r} in {pair!r}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+    return out
+
+
+def _augment_display(
+    con,
+    rows: list[tuple],
+    cols: list[str],
+    show_awards: bool,
+    show_context: bool,
+) -> tuple[list[tuple], list[str]]:
+    """Append ``awards`` and/or context columns to the result for display.
+
+    Pure CLI-side enrichment — joins are made via secondary queries
+    against player_awards and v_player_season_full keyed by
+    (name, season, team). The underlying pos_topN query and its
+    column set are unchanged.
+    """
+    new_cols = list(cols)
+    new_rows = [list(r) for r in rows]
+
+    name_idx = cols.index("name")
+    team_idx = cols.index("team")
+    season_idx = cols.index("season")
+
+    # Build (name, season, team) -> (awards_str, conf, div, franchise).
+    keys = [
+        (r[name_idx], r[season_idx], r[team_idx]) for r in rows
+    ]
+    if show_awards:
+        new_cols.append("awards")
+    if show_context:
+        new_cols.extend(["conference", "division", "franchise"])
+
+    for i, (name, season, team) in enumerate(keys):
+        extras: list = []
+        if show_awards:
+            award_rows = con.execute(
+                "SELECT award_type FROM player_awards pa "
+                "JOIN players p USING (player_id) "
+                "WHERE  p.name = ? AND pa.season = ? "
+                "ORDER BY award_type",
+                [name, season],
+            ).fetchall()
+            extras.append(",".join(a for (a,) in award_rows) or "")
+        if show_context:
+            ctx = con.execute(
+                "SELECT conference, division, franchise "
+                "FROM   team_seasons "
+                "WHERE  team = ? AND season = ?",
+                [team, season],
+            ).fetchone()
+            extras.extend(ctx if ctx else (None, None, None))
+        new_rows[i].extend(extras)
+
+    return [tuple(r) for r in new_rows], new_cols
 
 
 if __name__ == "__main__":

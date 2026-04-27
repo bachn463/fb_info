@@ -204,6 +204,135 @@ def test_ask_pos_top_undrafted_token(tmp_path):
     assert "Walter Payton" in result.output
 
 
+def test_ask_pos_top_min_stat_filter(tmp_path):
+    """--min-stat threshold filters via numeric comparison."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "RB",
+            "--rank-by", "rush_yds",
+            "--n", "5",
+            "--min-stat", "rush_yds=1500",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Walter Payton 1985 had 1551 rush_yds → in range.
+    assert "Walter Payton" in result.output
+
+
+def test_ask_pos_top_max_stat_filter_excludes_high(tmp_path):
+    """--max-stat ceiling drops anyone above the threshold."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "RB",
+            "--rank-by", "rush_yds",
+            "--n", "5",
+            "--max-stat", "rush_yds=999",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Walter Payton (1551 yds) should be excluded.
+    assert "Walter Payton" not in result.output
+
+
+def test_ask_pos_top_malformed_stat_pair_rejected(tmp_path):
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "RB",
+            "--min-stat", "no_equals_sign",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "col=value" in result.output
+
+
+def test_ask_pos_top_show_awards_appends_column(tmp_path):
+    """--show-awards adds an `awards` column to the output."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "QB",
+            "--rank-by", "pass_yds",
+            "--n", "1",
+            "--start", "1985",
+            "--end", "1985",
+            "--show-awards",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Header row should contain `awards`. Marino 1985 had PB,AP_FIRST.
+    assert "awards" in result.output
+    # The Marino awards string should be present.
+    assert "PB" in result.output
+
+
+def test_ask_pos_top_show_context_appends_columns(tmp_path):
+    """--show-context adds conference / division / franchise columns."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "RB",
+            "--rank-by", "rush_yds",
+            "--n", "1",
+            "--start", "1985",
+            "--end", "1985",
+            "--show-context",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "conference" in result.output
+    assert "division" in result.output
+    assert "franchise" in result.output
+    # Marcus Allen 1985 led the league in rushing (1759 yds, RAI in AFC West).
+    assert "AFC West" in result.output
+    assert "raiders" in result.output
+
+
+def test_ask_pos_top_default_no_extra_columns(tmp_path):
+    """Backward compat: bare invocation without --show-awards or
+    --show-context produces the original 8-column output (no extra
+    columns)."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "RB",
+            "--rank-by", "rush_yds",
+            "--n", "1",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "awards" not in result.output
+    assert "conference" not in result.output
+    assert "division" not in result.output
+    assert "franchise" not in result.output
+
+
 def test_ask_pos_top_mixed_draft_rounds_and_undrafted(tmp_path):
     """Mixed rounds + undrafted parses cleanly through the CLI."""
     db = tmp_path / "ff.duckdb"
