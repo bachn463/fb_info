@@ -50,8 +50,13 @@ class SuppDraft:
 SUPPLEMENTAL_DRAFTS: list[SuppDraft] = [
     # 1984 NFL Supplemental Draft of USFL/CFL Players (a one-time
     # event prompted by the USFL's existence; not a regular yearly
-    # supp draft, but the resolution mechanism is the same).
+    # supp draft, but the resolution mechanism is the same). Players
+    # didn't actually join the NFL team until their USFL contracts
+    # expired (typically 1985).
+    SuppDraft("Steve Young",      1984, 1, "TAM"),
     SuppDraft("Reggie White",     1984, 1, "PHI"),
+    SuppDraft("Mike Rozier",      1984, 1, "HOU"),
+    SuppDraft("Gary Zimmerman",   1984, 3, "NYG"),
 
     # 1985 NFL Supplemental Draft (also a special one-time event for
     # USFL alumni in the year of the league's collapse).
