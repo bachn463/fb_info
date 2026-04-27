@@ -267,11 +267,13 @@ def transform_draft_picks(raw: pl.DataFrame) -> pl.DataFrame:
 #   2017-2019   Chargers move SD -> LAC.
 #   2020+       Raiders move OAK -> LV.
 
-# Stable ``(team_code, franchise)`` constants for the modern era. Used in
-# multiple eras unchanged.
+# Stable ``(team_code, franchise)`` constants. PFR's stat tables use
+# 3-letter display codes throughout (NWE, KAN, GNB, NOR, SFO, TAM,
+# SDG, LVR), so the era table uses those codes — they're the literal
+# strings that land in player_season_stats.team after ingest.
 _BUF = ("BUF", "bills")
 _MIA = ("MIA", "dolphins")
-_NWE_M = ("NE", "patriots")        # nflverse 2-letter
+_NWE = ("NWE", "patriots")
 _NYJ = ("NYJ", "jets")
 _BAL_RAVENS = ("BAL", "ravens")
 _CIN = ("CIN", "bengals")
@@ -282,32 +284,22 @@ _IND = ("IND", "colts")
 _JAX = ("JAX", "jaguars")
 _TEN = ("TEN", "titans")
 _DEN = ("DEN", "broncos")
-_KC_M = ("KC", "chiefs")           # nflverse 2-letter
+_KAN = ("KAN", "chiefs")
 _DAL = ("DAL", "cowboys")
 _NYG = ("NYG", "giants")
 _PHI = ("PHI", "eagles")
 _WAS = ("WAS", "commanders")
 _CHI = ("CHI", "bears")
 _DET = ("DET", "lions")
-_GB_M = ("GB", "packers")          # nflverse 2-letter
+_GNB = ("GNB", "packers")
 _MIN = ("MIN", "vikings")
 _ATL = ("ATL", "falcons")
 _CAR = ("CAR", "panthers")
-_NO_M = ("NO", "saints")           # nflverse 2-letter
-_TB_M = ("TB", "buccaneers")       # nflverse 2-letter
-_SEA = ("SEA", "seahawks")
-_SF_M = ("SF", "49ers")            # nflverse 2-letter
-_ARI = ("ARI", "cardinals")
-
-# Pre-1999 PFR display codes that differ from nflverse's. PFR uses
-# 3-letter codes (NWE, KAN, GNB, NOR, SFO, TAM, SDG) where nflverse
-# uses 2-letter (NE, KC, GB, NO, SF, TB, SD).
-_NWE_P = ("NWE", "patriots")
-_KAN = ("KAN", "chiefs")
-_GNB = ("GNB", "packers")
 _NOR = ("NOR", "saints")
-_SFO = ("SFO", "49ers")
 _TAM = ("TAM", "buccaneers")
+_SEA = ("SEA", "seahawks")
+_SFO = ("SFO", "49ers")
+_ARI = ("ARI", "cardinals")
 _SDG = ("SDG", "chargers")
 
 # Time-ambiguous codes — same letters, different franchise per era.
@@ -321,10 +313,9 @@ _STL_RAMS = ("STL", "rams")              # 1995-2015
 _RAM = ("RAM", "rams")                   # 1970-1981 LA Rams (PFR display)
 _RAI = ("RAI", "raiders")                # 1982-1994 LA Raiders (PFR display)
 _OAK = ("OAK", "raiders")                # 1970-1981 + 1995-2019
-_LV = ("LV", "raiders")
-_LAR = ("LAR", "rams")
-_LAC = ("LAC", "chargers")
-_SD_M = ("SD", "chargers")               # 1999-2016 (nflverse)
+_LVR = ("LVR", "raiders")                # 2020+ Las Vegas Raiders (PFR display)
+_LAR = ("LAR", "rams")                   # 2016+ LA Rams
+_LAC = ("LAC", "chargers")               # 2017+ LA Chargers
 
 
 _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
@@ -339,7 +330,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     }),
     # 1971-1975 — Patriots renamed BOS->NWE.
     (1971, 1975, {
-        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG],
         ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
@@ -348,7 +339,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     }),
     # 1976 only — TB joins AFC West, SEA joins NFC West (rotates next year).
     (1976, 1976, {
-        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _TAM],
         ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
@@ -357,7 +348,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     }),
     # 1977-1981 — SEA AFC West, TB NFC Central, OAK Raiders still in OAK.
     (1977, 1981, {
-        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _SEA],
         ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
@@ -366,7 +357,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     }),
     # 1982-1983 — Raiders move to LA (RAI). Colts still in BAL.
     (1982, 1983, {
-        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BAL_COLTS, _BUF, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _RAI, _SDG, _SEA],
         ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
@@ -375,7 +366,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     }),
     # 1984-1987 — Colts move BAL->IND. Cardinals still in STL.
     (1984, 1987, {
-        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _RAI, _SDG, _SEA],
         ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _STL_CARDS, _WAS],
@@ -384,7 +375,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     }),
     # 1988-1993 — Cardinals move STL->PHO.
     (1988, 1993, {
-        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _RAI, _SDG, _SEA],
         ("NFC", "NFC East"):    [_DAL, _NYG, _PHI, _PHO, _WAS],
@@ -393,7 +384,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     }),
     # 1994 — Cardinals rename PHO->ARI. Last year of LA Rams + LA Raiders.
     (1994, 1994, {
-        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _RAI, _SDG, _SEA],
         ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
@@ -403,7 +394,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     # 1995 — CAR + JAX expansion. Rams LA->STL. Raiders LA->OAK. CLE still
     # in Cleveland (last year before suspension).
     (1995, 1995, {
-        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_CIN, _CLE, _HOU_OILERS, ("JAX", "jaguars"), _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _SEA],
         ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
@@ -412,7 +403,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     }),
     # 1996 — CLE Browns suspended, Ravens new in BAL.
     (1996, 1996, {
-        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_BAL_RAVENS, _CIN, _HOU_OILERS, ("JAX", "jaguars"), _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _SEA],
         ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
@@ -421,7 +412,7 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     }),
     # 1997-1998 — Oilers HOU->OTI (Tennessee Oilers).
     (1997, 1998, {
-        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_P, _NYJ],
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_BAL_RAVENS, _CIN, ("JAX", "jaguars"), _OTI, _PIT],
         ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _SEA],
         ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
@@ -432,56 +423,56 @@ _ERAS: list[tuple[int, int, dict[tuple[str, str], list[tuple[str, str]]]]] = [
     # nflverse-style 2-letter codes (KC, GB, NO, SF, TB, NE) since
     # nflverse is the data source from here on.
     (1999, 2001, {
-        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC East"):    [_BUF, _IND, _MIA, _NWE, _NYJ],
         ("AFC", "AFC Central"): [_BAL_RAVENS, _CIN, _CLE, _JAX, _PIT, _TEN],
-        ("AFC", "AFC West"):    [_DEN, _KC_M, _OAK, _SD_M, _SEA],
+        ("AFC", "AFC West"):    [_DEN, _KAN, _OAK, _SDG, _SEA],
         ("NFC", "NFC East"):    [_ARI, _DAL, _NYG, _PHI, _WAS],
-        ("NFC", "NFC Central"): [_CHI, _DET, _GB_M, _MIN, _TB_M],
-        ("NFC", "NFC West"):    [_ATL, _CAR, _NO_M, _SF_M, _STL_RAMS],
+        ("NFC", "NFC Central"): [_CHI, _DET, _GNB, _MIN, _TAM],
+        ("NFC", "NFC West"):    [_ATL, _CAR, _NOR, _SFO, _STL_RAMS],
     }),
     # 2002-2015 — 8 divisions, HOU Texans expansion, SEA -> NFC West.
     (2002, 2015, {
-        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE, _NYJ],
         ("AFC", "AFC North"): [_BAL_RAVENS, _CIN, _CLE, _PIT],
         ("AFC", "AFC South"): [_HOU_TEXANS, _IND, _JAX, _TEN],
-        ("AFC", "AFC West"):  [_DEN, _KC_M, _OAK, _SD_M],
+        ("AFC", "AFC West"):  [_DEN, _KAN, _OAK, _SDG],
         ("NFC", "NFC East"):  [_DAL, _NYG, _PHI, _WAS],
-        ("NFC", "NFC North"): [_CHI, _DET, _GB_M, _MIN],
-        ("NFC", "NFC South"): [_ATL, _CAR, _NO_M, _TB_M],
-        ("NFC", "NFC West"):  [_ARI, _SEA, _SF_M, _STL_RAMS],
+        ("NFC", "NFC North"): [_CHI, _DET, _GNB, _MIN],
+        ("NFC", "NFC South"): [_ATL, _CAR, _NOR, _TAM],
+        ("NFC", "NFC West"):  [_ARI, _SEA, _SFO, _STL_RAMS],
     }),
     # 2016 — Rams STL -> LAR.
     (2016, 2016, {
-        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE, _NYJ],
         ("AFC", "AFC North"): [_BAL_RAVENS, _CIN, _CLE, _PIT],
         ("AFC", "AFC South"): [_HOU_TEXANS, _IND, _JAX, _TEN],
-        ("AFC", "AFC West"):  [_DEN, _KC_M, _OAK, _SD_M],
+        ("AFC", "AFC West"):  [_DEN, _KAN, _OAK, _SDG],
         ("NFC", "NFC East"):  [_DAL, _NYG, _PHI, _WAS],
-        ("NFC", "NFC North"): [_CHI, _DET, _GB_M, _MIN],
-        ("NFC", "NFC South"): [_ATL, _CAR, _NO_M, _TB_M],
-        ("NFC", "NFC West"):  [_ARI, _LAR, _SEA, _SF_M],
+        ("NFC", "NFC North"): [_CHI, _DET, _GNB, _MIN],
+        ("NFC", "NFC South"): [_ATL, _CAR, _NOR, _TAM],
+        ("NFC", "NFC West"):  [_ARI, _LAR, _SEA, _SFO],
     }),
     # 2017-2019 — Chargers SD -> LAC.
     (2017, 2019, {
-        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE, _NYJ],
         ("AFC", "AFC North"): [_BAL_RAVENS, _CIN, _CLE, _PIT],
         ("AFC", "AFC South"): [_HOU_TEXANS, _IND, _JAX, _TEN],
-        ("AFC", "AFC West"):  [_DEN, _KC_M, _LAC, _OAK],
+        ("AFC", "AFC West"):  [_DEN, _KAN, _LAC, _OAK],
         ("NFC", "NFC East"):  [_DAL, _NYG, _PHI, _WAS],
-        ("NFC", "NFC North"): [_CHI, _DET, _GB_M, _MIN],
-        ("NFC", "NFC South"): [_ATL, _CAR, _NO_M, _TB_M],
-        ("NFC", "NFC West"):  [_ARI, _LAR, _SEA, _SF_M],
+        ("NFC", "NFC North"): [_CHI, _DET, _GNB, _MIN],
+        ("NFC", "NFC South"): [_ATL, _CAR, _NOR, _TAM],
+        ("NFC", "NFC West"):  [_ARI, _LAR, _SEA, _SFO],
     }),
     # 2020+ — Raiders OAK -> LV.
     (2020, 2099, {
-        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE_M, _NYJ],
+        ("AFC", "AFC East"):  [_BUF, _MIA, _NWE, _NYJ],
         ("AFC", "AFC North"): [_BAL_RAVENS, _CIN, _CLE, _PIT],
         ("AFC", "AFC South"): [_HOU_TEXANS, _IND, _JAX, _TEN],
-        ("AFC", "AFC West"):  [_DEN, _KC_M, _LAC, _LV],
+        ("AFC", "AFC West"):  [_DEN, _KAN, _LAC, _LVR],
         ("NFC", "NFC East"):  [_DAL, _NYG, _PHI, _WAS],
-        ("NFC", "NFC North"): [_CHI, _DET, _GB_M, _MIN],
-        ("NFC", "NFC South"): [_ATL, _CAR, _NO_M, _TB_M],
-        ("NFC", "NFC West"):  [_ARI, _LAR, _SEA, _SF_M],
+        ("NFC", "NFC North"): [_CHI, _DET, _GNB, _MIN],
+        ("NFC", "NFC South"): [_ATL, _CAR, _NOR, _TAM],
+        ("NFC", "NFC West"):  [_ARI, _LAR, _SEA, _SFO],
     }),
 ]
 

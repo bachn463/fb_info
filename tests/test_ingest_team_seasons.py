@@ -32,15 +32,15 @@ def test_build_returns_32_teams_for_2002_onwards():
 def test_2001_nfc_central_includes_modern_nfc_north_plus_tampa():
     df = build_team_seasons([2001])
     central = df.filter(pl.col("division") == "NFC Central")["team"].to_list()
-    assert sorted(central) == sorted(["CHI", "DET", "GB", "MIN", "TB"])
+    assert sorted(central) == sorted(["CHI", "DET", "GNB", "MIN", "TAM"])
 
 
 def test_2002_realignment_creates_nfc_north_without_tampa():
     df = build_team_seasons([2002])
     north = df.filter(pl.col("division") == "NFC North")["team"].to_list()
-    assert sorted(north) == sorted(["CHI", "DET", "GB", "MIN"])
+    assert sorted(north) == sorted(["CHI", "DET", "GNB", "MIN"])
     # Tampa is now NFC South.
-    tb_div = _row(df, team="TB", season=2002)["division"]
+    tb_div = _row(df, team="TAM", season=2002)["division"]
     assert tb_div == "NFC South"
 
 
@@ -50,16 +50,18 @@ def test_seattle_moved_to_nfc_west_in_2002():
 
 
 def test_relocated_team_codes_use_period_appropriate_code():
+    # PFR uses 3-letter codes throughout; team codes change with the
+    # relocation/rename year.
     # Rams: STL through 2015, LAR from 2016
     assert "STL" in build_team_seasons([2015])["team"].to_list()
     assert "LAR" in build_team_seasons([2016])["team"].to_list()
     assert "STL" not in build_team_seasons([2016])["team"].to_list()
-    # Chargers: SD through 2016, LAC from 2017
-    assert "SD" in build_team_seasons([2016])["team"].to_list()
+    # Chargers: SDG through 2016, LAC from 2017
+    assert "SDG" in build_team_seasons([2016])["team"].to_list()
     assert "LAC" in build_team_seasons([2017])["team"].to_list()
-    # Raiders: OAK through 2019, LV from 2020
+    # Raiders: OAK through 2019, LVR from 2020
     assert "OAK" in build_team_seasons([2019])["team"].to_list()
-    assert "LV" in build_team_seasons([2020])["team"].to_list()
+    assert "LVR" in build_team_seasons([2020])["team"].to_list()
 
 
 def test_franchise_key_stable_across_relocation():
@@ -67,9 +69,9 @@ def test_franchise_key_stable_across_relocation():
     stl = _row(build_team_seasons([2015]), team="STL", season=2015)
     lar = _row(build_team_seasons([2016]), team="LAR", season=2016)
     assert stl["franchise"] == lar["franchise"] == "rams"
-    # Same for Raiders (OAK -> LV).
+    # Same for Raiders (OAK -> LVR).
     oak = _row(build_team_seasons([2019]), team="OAK", season=2019)
-    lv = _row(build_team_seasons([2020]), team="LV", season=2020)
+    lv = _row(build_team_seasons([2020]), team="LVR", season=2020)
     assert oak["franchise"] == lv["franchise"] == "raiders"
 
 
@@ -87,15 +89,16 @@ def test_motivating_query_q2_division_filter_returns_expected_franchises():
         & (pl.col("season").is_between(1999, 2005))
     )["team"].unique().to_list()
 
-    assert sorted(nfc_central) == sorted(["CHI", "DET", "GB", "MIN", "TB"])
-    assert sorted(nfc_north) == sorted(["CHI", "DET", "GB", "MIN"])
+    # PFR 3-letter codes throughout.
+    assert sorted(nfc_central) == sorted(["CHI", "DET", "GNB", "MIN", "TAM"])
+    assert sorted(nfc_north) == sorted(["CHI", "DET", "GNB", "MIN"])
 
-    # Franchise-grouped: union of CHI/DET/GB/MIN modern franchises across
+    # Franchise-grouped: union of CHI/DET/GNB/MIN modern franchises across
     # the whole window is consistent (Tampa is "buccaneers", not in the
     # modern NFC North franchises).
     nfcn_franchises = (
         df.filter(pl.col("division").is_in(["NFC North", "NFC Central"]))
-          .filter(pl.col("team").is_in(["CHI", "DET", "GB", "MIN"]))
+          .filter(pl.col("team").is_in(["CHI", "DET", "GNB", "MIN"]))
           ["franchise"].unique().to_list()
     )
     assert sorted(nfcn_franchises) == sorted(["bears", "lions", "packers", "vikings"])
