@@ -159,9 +159,9 @@ def ask_div_int(
 @ask_app.command("pos-top")
 def ask_pos_top(
     position: str = typer.Option(
-        ..., "--position",
+        "ALL", "--position",
         help='Position label ("QB", "RB", "WR", "TE", "CB", ...) or '
-             '"FLEX" (RB/WR/TE) or "ALL".',
+             '"FLEX" (RB/WR/TE) or "ALL" (default — no position filter).',
     ),
     rank_by: str = typer.Option(
         "fpts_ppr", "--rank-by",
