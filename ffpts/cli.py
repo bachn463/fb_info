@@ -1229,26 +1229,27 @@ def ask_compare(
 # before 1982 since that's when sacks became an official stat).
 #
 # List-duplication is the weighting mechanism. Target distribution
-# (chosen so trivia leans toward the stats fans care about most):
-#   offense (pass+rush+rec): ~58%
-#   fantasy:                 ~20%
-#   defense:                 ~14%
-#   special teams (K + ret):  ~8%
+# (lean toward the stats fans care about most):
+#   offense (pass+rush+rec): ~48%
+#   fantasy:                 ~38%
+#   defense:                 ~10%
+#   special teams (K + ret):  ~4%
+# Total list size = 100 so each entry-count = direct percentage.
 _RANDOM_RANK_BY: list[str] = (
-    # Passing
-    ["pass_yds"] * 3 + ["pass_td"] * 3 + ["pass_cmp"] * 2 + ["pass_rating"] * 2
-    # Rushing
-    + ["rush_yds"] * 3 + ["rush_td"] * 3 + ["rush_att"] * 2
-    # Receiving
-    + ["rec_yds"] * 3 + ["rec"] * 3 + ["rec_td"] * 3 + ["targets"] * 2
-    # Fantasy
-    + ["fpts_ppr"] * 4 + ["fpts_half"] * 3 + ["fpts_std"] * 3
-    # Defense (down-weighted vs. the offense categories)
-    + ["def_sacks"] * 2 + ["def_int"] * 2 + ["def_int_td"]
-    + ["def_tackles_combined"] + ["def_pass_def"]
-    # Special teams (rarest — kickers and return men are a niche game)
-    + ["fg_made"] + ["fg_long"]
-    + ["kr_yds"] + ["pr_yds"]
+    # Passing — 16 (incl. 3 for the new pass_cmp_pct ratio stat)
+    ["pass_yds"] * 5 + ["pass_td"] * 4 + ["pass_cmp_pct"] * 3
+    + ["pass_rating"] * 2 + ["pass_cmp"] * 2
+    # Rushing — 14
+    + ["rush_yds"] * 5 + ["rush_td"] * 5 + ["rush_att"] * 4
+    # Receiving — 18
+    + ["rec_yds"] * 6 + ["rec"] * 5 + ["rec_td"] * 4 + ["targets"] * 3
+    # Fantasy — 38 (PPR most popular, hence heaviest)
+    + ["fpts_ppr"] * 16 + ["fpts_half"] * 12 + ["fpts_std"] * 10
+    # Defense — 10
+    + ["def_sacks"] * 3 + ["def_int"] * 3 + ["def_tackles_combined"] * 2
+    + ["def_int_td"] + ["def_pass_def"]
+    # Special teams — 4 (rarest; one per kicking + each return type)
+    + ["fg_made"] + ["fg_long"] + ["kr_yds"] + ["pr_yds"]
 )
 
 # Used to apply richer filter combinations when the rank-by is on the
@@ -1282,6 +1283,7 @@ _STAT_COMPATIBLE_POSITIONS: dict[str, list[str]] = {
     "pass_td":               ["QB"] * 5 + ["ALL"],
     "pass_cmp":              ["QB"] * 5 + ["ALL"],
     "pass_rating":           ["QB"],
+    "pass_cmp_pct":          ["QB"],
     "rush_yds":              ["RB"] * 4 + ["FLEX", "QB", "ALL", "WR"],
     "rush_td":               ["RB"] * 4 + ["FLEX", "QB", "ALL", "WR"],
     "rush_att":              ["RB"] * 5 + ["FLEX", "QB", "ALL"],
@@ -1328,6 +1330,55 @@ _RANDOM_AWARDS: list[str] = [
 ]
 _RANDOM_N_CHOICES: list[int] = [5, 5, 10, 10, 10, 15]
 
+# Draft-round buckets sampled by the random generator. Each entry is
+# a list[int|str] in the format pos_topN expects.
+_RANDOM_DRAFT_ROUNDS: list[list] = [
+    [1],
+    [2, 3],
+    [4, 5, 6, 7],
+    ["undrafted"],
+]
+
+# Companion-stat thresholds keyed by the rank-by stat. Each entry is a
+# list of (stat, threshold_value) pairs to sample from when the random
+# gen wants to add a min_stat or max_stat constraint. Thresholds are
+# tuned so the resulting answer set is usually non-empty across the
+# 1970-2025 build but the filter still meaningfully narrows the pool.
+_COMPANION_MIN_STAT_FOR: dict[str, list[tuple[str, float]]] = {
+    "pass_yds":     [("pass_td", 25), ("rush_yds", 200), ("pass_cmp", 300)],
+    "pass_td":      [("pass_yds", 4000), ("rush_yds", 200)],
+    "pass_cmp":     [("pass_yds", 3500), ("pass_td", 20)],
+    "pass_cmp_pct": [("pass_att", 100), ("pass_td", 15)],
+    "pass_rating":  [("pass_att", 200), ("pass_td", 15)],
+    "rush_yds":     [("rush_td", 8), ("rec_yds", 200), ("rush_att", 200)],
+    "rush_td":      [("rush_yds", 800), ("rush_att", 150)],
+    "rush_att":     [("rush_yds", 800), ("rush_td", 5)],
+    "rec_yds":      [("rec_td", 8), ("rec", 60), ("targets", 80)],
+    "rec":          [("rec_yds", 800), ("rec_td", 5)],
+    "rec_td":       [("rec_yds", 600), ("rec", 40)],
+    "targets":      [("rec", 50), ("rec_yds", 600)],
+    "fpts_ppr":     [("games", 12), ("rec", 40)],
+    "fpts_half":    [("games", 12), ("rush_att", 100)],
+    "fpts_std":     [("games", 12), ("rush_td", 5)],
+    "def_sacks":    [("games", 12)],
+    "def_int":      [("games", 12)],
+    "def_tackles_combined": [("games", 12)],
+    "fg_made":      [("fg_att", 20)],
+    "kr_yds":       [("kr", 20)],
+    "pr_yds":       [("pr", 20)],
+}
+_COMPANION_MAX_STAT_FOR: dict[str, list[tuple[str, float]]] = {
+    "rush_att":     [("rush_yds", 999)],   # high-volume, low-yardage
+    "pass_att":     [("pass_yds", 3000)],  # bad-but-busy QBs
+    "targets":      [("rec_yds", 700)],    # lots of looks, few yards
+    "fpts_ppr":     [("games", 13)],       # short-season top-N
+    "fpts_half":    [("games", 13)],
+    "fpts_std":     [("games", 13)],
+}
+
+# Initials sampled for the last-name letter filter.
+_LAST_NAME_INITIALS: list[str] = list("ABCDEFGHIJKLMNOPRSTW")
+
 
 def _random_trivia_template(rng) -> dict:
     """Build a fresh template by sampling each filter dimension.
@@ -1351,16 +1402,21 @@ def _random_trivia_template(rng) -> dict:
     }
 
     # Filter intensity: offense / fantasy templates get richer
-    # qualifiers (year ranges, team/division/conference, award, rookie)
-    # because the unfiltered "top 10 pass_yds" question is too easy and
-    # the candidate pool is huge; defense and special-teams trivia
-    # already has a small enough candidate pool that piling on filters
-    # makes most attempts return empty.
-    is_off = rank_by in _OFFENSE_AND_FANTASY_RANK_BY
-    p_year   = 0.65 if is_off else 0.35
-    p_geo    = 0.45 if is_off else 0.20  # cumulative across team/div/conf
-    p_award  = 0.40 if is_off else 0.15  # cumulative across has/ever
-    p_rookie = 0.15 if is_off else 0.05
+    # qualifiers because their candidate pools are huge and a bare
+    # "top 10 pass_yds" question is too easy; defense and special-teams
+    # pools are smaller, but we still aim for an avg of 2+ active
+    # limiters per template. The retry-until-non-empty loop in
+    # _pick_non_empty_template absorbs the empty-set risk that comes
+    # with stacking filters.
+    is_off  = rank_by in _OFFENSE_AND_FANTASY_RANK_BY
+    p_year     = 0.80 if is_off else 0.65
+    p_geo      = 0.55 if is_off else 0.45   # cumulative across team/div/conf
+    p_award    = 0.45 if is_off else 0.35   # cumulative across has/ever
+    p_rookie   = 0.20 if is_off else 0.15
+    p_draft_rd = 0.20 if is_off else 0.15
+    p_min_stat = 0.30 if is_off else 0.15
+    p_max_stat = 0.15 if is_off else 0.05
+    p_initial  = 0.15 if is_off else 0.10
 
     # Year range — start ≤ end always enforced.
     min_floor = _STAT_MIN_SEASON.get(rank_by, 1970)
@@ -1396,6 +1452,35 @@ def _random_trivia_template(rng) -> dict:
     if rng.random() < p_rookie:
         spec["rookie_only"] = True
 
+    # Draft-round bucket. Mutually exclusive with rookie_only doesn't
+    # help — both filters compose fine.
+    if rng.random() < p_draft_rd:
+        spec["draft_rounds"] = list(rng.choice(_RANDOM_DRAFT_ROUNDS))
+
+    # Companion min_stat / max_stat thresholds. Pick a stat OTHER than
+    # rank_by from the curated lists so the threshold actually narrows
+    # the pool meaningfully. pass_cmp_pct ALWAYS gets a min_stat for
+    # pass_att (otherwise leaderboards are dominated by 1-attempt
+    # trick plays).
+    if rank_by == "pass_cmp_pct":
+        spec["min_stats"] = {"pass_att": 100}
+    if rng.random() < p_min_stat:
+        candidates = _COMPANION_MIN_STAT_FOR.get(rank_by, [])
+        if candidates:
+            stat, value = rng.choice(candidates)
+            spec.setdefault("min_stats", {})[stat] = value
+    if rng.random() < p_max_stat:
+        candidates = _COMPANION_MAX_STAT_FOR.get(rank_by, [])
+        if candidates:
+            stat, value = rng.choice(candidates)
+            spec.setdefault("max_stats", {})[stat] = value
+
+    # Last-name initial filter: e.g. last names containing 'M'. The
+    # underlying flag is "contains" not "starts-with", so it's a
+    # broader gate but still recognizably a "last names with M" trivia.
+    if rng.random() < p_initial:
+        spec["last_name_contains"] = rng.choice(_LAST_NAME_INITIALS)
+
     return spec
 
 
@@ -1420,7 +1505,7 @@ def _resolve_template(con: duckdb.DuckDBPyConnection, template: dict):
 
 
 def _pick_non_empty_template(
-    con: duckdb.DuckDBPyConnection, rng, *, max_attempts: int = 12
+    con: duckdb.DuckDBPyConnection, rng, *, max_attempts: int = 25
 ) -> tuple[dict, list[dict], int, str, str]:
     """Sample random templates until one yields a non-empty answer
     set, up to ``max_attempts``. Falls back to a known-good

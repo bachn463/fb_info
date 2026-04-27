@@ -177,3 +177,32 @@ def test_awards_list_include_finalists(db):
 def test_awards_list_unknown_award_type_raises(db):
     with pytest.raises(ValueError):
         awards_list(award_type="BOGUS")
+
+
+# ---- pass_cmp_pct as a rank_by ----
+
+def test_pass_cmp_pct_works_in_pos_topN(db):
+    """pass_cmp_pct is a computed column on v_player_season_full;
+    pos_topN should rank by it without error and return values
+    between 0 and 1."""
+    from ffpts.queries import pos_topN
+
+    sql, params = pos_topN(
+        "QB", n=5, rank_by="pass_cmp_pct",
+        min_stats={"pass_att": 100},
+    )
+    rows = db.execute(sql, params).fetchall()
+    assert len(rows) > 0
+    cols = [d[0] for d in db.execute(sql, params).description]
+    rank_col = cols.index("rank_value")
+    for r in rows:
+        v = r[rank_col]
+        assert v is not None
+        assert 0 <= v <= 1, f"pass_cmp_pct outside [0,1]: {v}"
+
+
+def test_pass_cmp_pct_rejected_by_career_topN(db):
+    """Per-season ratio stats can't be summed across seasons; the
+    helper must reject them with a clear error."""
+    with pytest.raises(ValueError, match="ratio"):
+        career_topN("pass_cmp_pct", n=10)

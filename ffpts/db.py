@@ -165,6 +165,11 @@ VIEWS_DDL: list[str] = [
     """
     CREATE OR REPLACE VIEW v_player_season_full AS
     SELECT  s.*,
+            -- Per-season completion percentage. NULLIF guards against
+            -- 0-attempt rows (defenders / specialists who somehow
+            -- accumulate a token pass_cmp).
+            CAST(s.pass_cmp AS DOUBLE)
+                / NULLIF(s.pass_att, 0)            AS pass_cmp_pct,
             p.name,
             d.year         AS draft_year,
             d.round        AS draft_round,

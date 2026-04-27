@@ -128,9 +128,12 @@ def most_def_int_by_division(
 # meaningful.
 RANK_BY_ALLOWED: frozenset[str] = frozenset({
     "games", "games_started", "age",
-    # passing
+    # passing — pass_cmp_pct is computed in v_player_season_full as
+    # pass_cmp / NULLIF(pass_att, 0); rankable but NOT summable for
+    # career totals (see _CAREER_RATIO_RANK_BY).
     "pass_cmp", "pass_att", "pass_yds", "pass_td", "pass_int",
     "pass_sacks_taken", "pass_sack_yds", "pass_long", "pass_rating",
+    "pass_cmp_pct",
     # rushing
     "rush_att", "rush_yds", "rush_td", "rush_long",
     # receiving
@@ -520,6 +523,13 @@ def pos_topN(
 # Career totals — sums across all qualifying seasons for a player
 # ---------------------------------------------------------------------------
 
+# Per-season ratio stats that are rankable (pos_topN-eligible) but not
+# meaningful as a SUM across seasons. career_topN rejects these so a
+# user asking for "career pass_cmp_pct" gets a clear error rather than
+# a nonsense sum-of-percentages number.
+_CAREER_RATIO_RANK_BY: frozenset[str] = frozenset({"pass_cmp_pct"})
+
+
 def career_topN(
     rank_by: str,
     *,
@@ -544,6 +554,12 @@ def career_topN(
         raise ValueError(
             f"unknown rank_by column {rank_by!r}; allowed: "
             f"{sorted(RANK_BY_ALLOWED)}"
+        )
+    if rank_by in _CAREER_RATIO_RANK_BY:
+        raise ValueError(
+            f"{rank_by!r} is a per-season ratio stat — summing it "
+            "across seasons isn't meaningful. Use the single-season "
+            "pos_topN helper instead."
         )
 
     where: list[str] = [f"s.{rank_by} IS NOT NULL"]
