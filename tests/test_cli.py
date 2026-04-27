@@ -284,6 +284,69 @@ def test_ask_pos_top_show_awards_appends_column(tmp_path):
     assert "PB" in result.output
 
 
+def test_show_awards_renders_vote_finish_for_voted_awards(tmp_path):
+    """Voted awards display as <type>-<finish> so winners (vote_finish=1)
+    are unambiguous vs runners-up. User reported confusion: Cooper Kupp
+    showed 'MVP' for a year when Aaron Rodgers actually won — Kupp was
+    2nd in MVP voting that year. With this format he'd show 'MVP-2'."""
+    db = tmp_path / "ff.duckdb"
+    con = connect(db)
+    apply_schema(con)
+    # Insert a player + stats + awards directly so we can pin the
+    # output without depending on a full PFR build.
+    con.execute(
+        "INSERT INTO players (player_id, name) VALUES ('pfr:KuppCo00', 'Cooper Kupp')"
+    )
+    con.execute(
+        "INSERT INTO player_season_stats "
+        "(player_id, season, team, position, fpts_ppr, rec_yds) "
+        "VALUES ('pfr:KuppCo00', 2021, 'LAR', 'WR', 439.5, 1947)"
+    )
+    # OPOY won (vote_finish=1), MVP placed 2nd (Rodgers won that year).
+    # Plus binary PB and AP_FIRST.
+    con.execute(
+        "INSERT INTO player_awards (player_id, season, award_type, vote_finish) VALUES "
+        "('pfr:KuppCo00', 2021, 'MVP', 2),"
+        "('pfr:KuppCo00', 2021, 'OPOY', 1),"
+        "('pfr:KuppCo00', 2021, 'PB', NULL),"
+        "('pfr:KuppCo00', 2021, 'AP_FIRST', NULL)"
+    )
+    con.close()
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "WR",
+            "--rank-by", "fpts_ppr",
+            "--n", "1",
+            "--start", "2021",
+            "--end", "2021",
+            "--show-awards",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Cooper Kupp" in result.output
+    # MVP-2 disambiguates "got votes" from "won".
+    assert "MVP-2" in result.output
+    # OPOY-1 = won OPOY.
+    assert "OPOY-1" in result.output
+    # Binary awards stay bare.
+    assert "PB" in result.output
+    assert "AP_FIRST" in result.output
+    # Plain "MVP" alone (without -N) shouldn't appear — it'd be ambiguous.
+    # (Match around commas / end of line so we don't flag the "MVP-2" hit.)
+    awards_line = [
+        line for line in result.output.splitlines()
+        if "Cooper Kupp" in line
+    ][0]
+    tokens = [t for t in awards_line.split() if "MVP" in t or "OPOY" in t]
+    for tok in tokens:
+        # Each MVP/OPOY token must have the -N suffix.
+        if tok.startswith("MVP") or tok.startswith("OPOY"):
+            assert "-" in tok, f"voted award without finish suffix: {tok!r}"
+
+
 def test_ask_pos_top_show_context_appends_columns(tmp_path):
     """--show-context adds conference / division / franchise columns."""
     db = tmp_path / "ff.duckdb"

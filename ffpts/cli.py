@@ -329,6 +329,21 @@ def _parse_stat_pairs(
     return out
 
 
+def _fmt_award(award_type: str, vote_finish: int | None) -> str:
+    """Format an award row for the awards-column display.
+
+    Voted awards (MVP, OPOY, DPOY, OROY, DROY, CPOY) carry a numeric
+    vote_finish — 1 = won, 2+ = placing. Render as ``MVP-1``,
+    ``MVP-2`` etc. so the user sees who actually won vs. placed.
+
+    Binary awards (PB, AP_FIRST, AP_SECOND, WPMOY) have NULL
+    vote_finish and render bare.
+    """
+    if vote_finish is None:
+        return award_type
+    return f"{award_type}-{vote_finish}"
+
+
 def _augment_display(
     con,
     rows: list[tuple],
@@ -362,14 +377,19 @@ def _augment_display(
     for i, (name, season, team) in enumerate(keys):
         extras: list = []
         if show_awards:
+            # Sort: wins (vote_finish=1) first, then placings 2,3,...,
+            # then binary awards (NULL vote_finish, alphabetical).
             award_rows = con.execute(
-                "SELECT award_type FROM player_awards pa "
-                "JOIN players p USING (player_id) "
+                "SELECT award_type, vote_finish "
+                "FROM   player_awards pa "
+                "JOIN   players p USING (player_id) "
                 "WHERE  p.name = ? AND pa.season = ? "
-                "ORDER BY award_type",
+                "ORDER BY (vote_finish IS NULL) ASC, "
+                "         vote_finish ASC, "
+                "         award_type ASC",
                 [name, season],
             ).fetchall()
-            extras.append(",".join(a for (a,) in award_rows) or "")
+            extras.append(",".join(_fmt_award(a, f) for (a, f) in award_rows))
         if show_context:
             ctx = con.execute(
                 "SELECT conference, division, franchise "
