@@ -574,9 +574,14 @@ def career_topN(
                     f"{sorted(AWARD_TYPES_ALLOWED)}"
                 )
         ph = ",".join(["?"] * len(ever_won_award))
+        # Outright winners only — matches the pos_topN behavior so
+        # `--ever-won MVP` doesn't smuggle in 2nd-place vote-getters.
+        # vote_finish IS NULL covers the binary awards (PB, AP_FIRST,
+        # AP_SECOND, WPMOY) which never carry a placing.
         where.append(
             f"EXISTS (SELECT 1 FROM player_awards pa WHERE "
-            f"pa.player_id = s.player_id AND pa.award_type IN ({ph}))"
+            f"pa.player_id = s.player_id AND pa.award_type IN ({ph}) "
+            f"AND (pa.vote_finish = 1 OR pa.vote_finish IS NULL))"
         )
         params.extend(ever_won_award)
 

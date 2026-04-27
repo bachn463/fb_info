@@ -91,6 +91,35 @@ def test_career_topN_ever_won_filter(db):
     assert "Lamar Jackson" in names
 
 
+def test_career_topN_ever_won_excludes_finalists(db):
+    """The --ever-won filter should match outright winners only,
+    not vote-only finalists. 2023 MVP voting had Josh Allen finishing
+    behind Lamar Jackson — Allen should NOT be picked up by an MVP
+    ever-won filter despite having a vote_finish row in player_awards."""
+    # Sanity: confirm Allen has a non-winning MVP-vote row in our
+    # fixture data (otherwise this test isn't proving anything).
+    finalists = db.execute(
+        """
+        SELECT p.name, pa.vote_finish
+        FROM   player_awards pa
+        JOIN   players p USING (player_id)
+        WHERE  pa.award_type = 'MVP' AND pa.season = 2023
+          AND  pa.vote_finish > 1
+        """
+    ).fetchall()
+    assert any(name == "Josh Allen" for name, _ in finalists), (
+        "fixture sanity: expected Josh Allen as a 2023 MVP finalist"
+    )
+
+    sql, params = career_topN(
+        "pass_yds", n=20, ever_won_award=["MVP"],
+    )
+    rows = db.execute(sql, params).fetchall()
+    names = {r[0] for r in rows}
+    assert "Lamar Jackson" in names
+    assert "Josh Allen" not in names
+
+
 # ---- awards_list ----
 
 def test_awards_list_returns_expected_columns(db):

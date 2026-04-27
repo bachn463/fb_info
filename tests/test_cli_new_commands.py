@@ -398,6 +398,52 @@ def test_trivia_random_seed_42_title_consistency(tmp_path):
     assert title1 is not None and title1 == title2
 
 
+def test_trivia_random_position_matches_stat(tmp_path):
+    """The random generator must pair the rank-by stat with a
+    sensible position. Sweep many seeds, parse out the (rank_by,
+    position) pair from the title, and check that each pair is in
+    the compatibility map."""
+    from ffpts.cli import _STAT_COMPATIBLE_POSITIONS
+
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    seen_pairs: set[tuple[str, str]] = set()
+    for seed in range(40):
+        r = runner.invoke(
+            app, ["trivia", "random", "--seed", str(seed), "--db", str(db)],
+            input="quit\n",
+        )
+        # Title looks like:
+        #   "Top 10 RB player-seasons by rush_yds (...)"
+        # or "Top 10 player-seasons by fpts_ppr ..."  (no position word
+        # = ALL).
+        title = next(
+            (l for l in r.output.splitlines() if l.startswith("Top ")),
+            None,
+        )
+        if title is None:
+            continue
+        # Parse: "Top {n} [{POS} ]player-seasons by {rank_by}..."
+        head = title.split(" player-seasons by ")[0]
+        rest = title.split(" player-seasons by ")[1]
+        rank_by = rest.split(" ", 1)[0].rstrip(",")
+        head_parts = head.split()
+        # head_parts: ["Top", "10"] or ["Top", "10", "RB"]
+        position = head_parts[2] if len(head_parts) >= 3 else "ALL"
+        if rank_by not in _STAT_COMPATIBLE_POSITIONS:
+            # Unknown stat — generator shouldn't pick it.
+            continue
+        compat = set(_STAT_COMPATIBLE_POSITIONS[rank_by])
+        assert position in compat, (
+            f"seed {seed}: position {position} not in compatible "
+            f"set {compat} for stat {rank_by}"
+        )
+        seen_pairs.add((rank_by, position))
+    # Sanity: we should have seen multiple distinct (stat, position)
+    # combinations across 40 seeds.
+    assert len(seen_pairs) >= 5
+
+
 def test_trivia_random_some_seed_produces_no_unique_title(tmp_path):
     """At least one of the first 30 random seeds should land on a
     `unique=False` template, surfacing the multi-season tag in the

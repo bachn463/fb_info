@@ -1246,10 +1246,46 @@ _STAT_MIN_SEASON: dict[str, int] = {
     "def_tackles_assist":   1994,
     "targets":              1992,
 }
-_RANDOM_POSITIONS: list[str] = [
-    "ALL", "ALL", "ALL", "ALL",  # weight ALL highest — broadest sets
-    "QB", "RB", "WR", "TE", "FLEX", "K",
-]
+
+# Position pool per stat. Random generator picks rank_by first, then
+# samples a position from the corresponding list — list duplication is
+# how we weight (e.g. QB appears 5x for pass_yds so QBs are picked 5/6
+# of the time, with ALL the rare crossover). The cross-position picks
+# (RB throwing for yardage, QB making receptions) are kept on the menu
+# at low frequency for trivia novelty.
+_STAT_COMPATIBLE_POSITIONS: dict[str, list[str]] = {
+    "pass_yds":              ["QB"] * 5 + ["ALL"],
+    "pass_td":               ["QB"] * 5 + ["ALL"],
+    "pass_cmp":              ["QB"] * 5 + ["ALL"],
+    "pass_rating":           ["QB"],
+    "rush_yds":              ["RB"] * 4 + ["FLEX", "QB", "ALL", "WR"],
+    "rush_td":               ["RB"] * 4 + ["FLEX", "QB", "ALL", "WR"],
+    "rush_att":              ["RB"] * 5 + ["FLEX", "QB", "ALL"],
+    "rec_yds":               ["WR"] * 3 + ["TE", "RB", "FLEX", "ALL"],
+    "rec":                   ["WR"] * 3 + ["TE", "RB", "FLEX", "ALL"],
+    "rec_td":                ["WR"] * 2 + ["TE", "RB", "FLEX", "ALL"],
+    "targets":               ["WR"] * 2 + ["TE", "RB", "FLEX", "ALL"],
+    "fpts_ppr":              ["FLEX"] * 2 + ["ALL"] * 2 + ["QB", "RB", "WR", "TE"],
+    "fpts_half":             ["FLEX"] * 2 + ["ALL"] * 2 + ["QB", "RB", "WR", "TE"],
+    "fpts_std":              ["FLEX"] * 2 + ["ALL"] * 2 + ["QB", "RB", "WR", "TE"],
+    # Defense — position is fine-grained (LB/DB/DE/...) and we don't
+    # bother distinguishing in the DB, so ALL is the only sensible pick.
+    "def_sacks":             ["ALL"],
+    "def_int":               ["ALL"],
+    "def_int_td":            ["ALL"],
+    "def_pass_def":          ["ALL"],
+    "def_tackles_combined":  ["ALL"],
+    # Kicking — K (and P for punts, if/when added).
+    "fg_made":               ["K"],
+    "fg_long":               ["K"],
+    "xp_made":               ["K"],
+    # Returns — return jobs go to RBs/WRs/DBs alike, so ALL.
+    "kr_yds":                ["ALL"],
+    "kr_td":                 ["ALL"],
+    "pr_yds":                ["ALL"],
+    "pr_td":                 ["ALL"],
+}
+
 _RANDOM_TEAMS: list[str] = [
     "DAL", "PIT", "GB", "SF", "KAN", "NE", "DEN", "PHI",
     "NYG", "CHI", "MIN", "CLE", "BAL", "BUF", "MIA", "TEN",
@@ -1278,10 +1314,15 @@ def _random_trivia_template(rng) -> dict:
     are independent randomized toggles.
     """
     rank_by = rng.choice(_RANDOM_RANK_BY)
+    # Position is sampled from a stat-specific pool so we don't end up
+    # ranking running backs by passing yards or kickers by sacks. The
+    # weighting (list duplication) keeps natural pairings dominant
+    # while leaving room for occasional cross-position trivia.
+    pos_pool = _STAT_COMPATIBLE_POSITIONS.get(rank_by, ["ALL"])
     spec: dict = {
         "rank_by":  rank_by,
         "n":        rng.choice(_RANDOM_N_CHOICES),
-        "position": rng.choice(_RANDOM_POSITIONS),
+        "position": rng.choice(pos_pool),
         "unique":   rng.choice([True, True, False]),  # 2/3 unique
     }
 
