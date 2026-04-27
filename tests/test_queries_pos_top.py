@@ -877,14 +877,17 @@ def test_tiebreak_by_unknown_column_raises():
         pos_topN("WR", tiebreak_by=["DROP_TABLE"])
 
 
-def test_no_filters_unchanged_column_order_backward_compat(db):
-    """Backward-compat sanity: pos_topN with no new filters returns
-    the same 8 columns in the same order as before C6."""
+def test_pos_top_default_columns(db):
+    """Default pos_topN output is 9 columns now that ``college``
+    surfaces alongside the draft fields. Order is pinned so downstream
+    callers (CLI table printer, trivia) keep working without
+    schema-by-position assumptions."""
     sql, params = pos_topN("ALL", n=1, rank_by="fpts_ppr")
     cols = [d[0] for d in db.execute(sql, params).description]
     assert cols == [
         "name", "team", "season", "position", "rank_value",
         "draft_round", "draft_year", "draft_overall_pick",
+        "college",
     ]
 
 
@@ -895,4 +898,5 @@ def test_pos_top_returns_expected_column_order(db):
     assert cols == [
         "name", "team", "season", "position", "rank_value",
         "draft_round", "draft_year", "draft_overall_pick",
+        "college",
     ]

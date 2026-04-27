@@ -522,6 +522,7 @@ def pos_topN(
                        draft_round,
                        draft_year,
                        draft_overall_pick,
+                       college,
                        ROW_NUMBER() OVER (
                            PARTITION BY player_id
                            ORDER BY {order_sql}
@@ -530,7 +531,7 @@ def pos_topN(
                 WHERE  {where_sql}
             )
             SELECT name, team, season, position, rank_value,
-                   draft_round, draft_year, draft_overall_pick
+                   draft_round, draft_year, draft_overall_pick, college
             FROM   ranked
             WHERE  __rn = 1
             ORDER BY {outer_order_sql}
@@ -545,7 +546,8 @@ def pos_topN(
                    {rank_by} AS rank_value,
                    draft_round,
                    draft_year,
-                   draft_overall_pick
+                   draft_overall_pick,
+                   college
             FROM   v_player_season_full
             WHERE  {where_sql}
             ORDER BY {order_sql}

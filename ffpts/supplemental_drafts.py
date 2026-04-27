@@ -99,3 +99,72 @@ SUPPLEMENTAL_DRAFTS: list[SuppDraft] = [
     # 2019 NFL Supplemental Draft
     SuppDraft("Jalen Thompson",   2019, 5, "ARI"),
 ]
+
+
+@dataclass(frozen=True)
+class CollegeOverride:
+    """Hand-encoded college history for players whose ``college`` is
+    missing or incomplete in the auto-scraped data.
+
+    Three reasons a player needs an override:
+      1. Transfers — PFR's draft page lists only the drafted-from
+         school, so transfers like Jalen Hurts (Alabama -> Oklahoma)
+         lose their pre-transfer history.
+      2. Supplemental-draft picks — our SUPPLEMENTAL_DRAFTS rows
+         insert into draft_picks without a college value, since the
+         supp-draft data we encode is just (round, team, year).
+      3. Undrafted free agents — no draft_picks row at all, so the
+         college column is NULL for them.
+
+    ``colleges`` is an ordered tuple from earliest school to most
+    recent (transfer chronology). Stored joined with ", " into
+    ``players.college`` so the existing ``--college`` ILIKE filter
+    catches any of the listed schools.
+
+    ``player_id`` is optional; if omitted the override matches by
+    ``name`` alone. Provide it when two players share a display name.
+    """
+
+    name: str
+    colleges: tuple[str, ...]
+    player_id: str | None = None
+
+
+# Hand-curated overrides. Add to this list to extend coverage.
+KNOWN_COLLEGE_OVERRIDES: list[CollegeOverride] = [
+    # --- Famous post-2010 transfers (drafted-from college first wasn't
+    # the only school they attended) ---
+    CollegeOverride("Cam Newton",        ("Florida", "Blinn College", "Auburn")),
+    CollegeOverride("Russell Wilson",    ("NC State", "Wisconsin")),
+    CollegeOverride("Baker Mayfield",    ("Texas Tech", "Oklahoma")),
+    CollegeOverride("Kyler Murray",      ("Texas A&M", "Oklahoma")),
+    CollegeOverride("Joe Burrow",        ("Ohio State", "LSU")),
+    CollegeOverride("Jalen Hurts",       ("Alabama", "Oklahoma")),
+    CollegeOverride("Justin Fields",     ("Georgia", "Ohio State")),
+    CollegeOverride("Bo Nix",            ("Auburn", "Oregon")),
+    CollegeOverride("Caleb Williams",    ("Oklahoma", "USC")),
+    CollegeOverride("Jayden Daniels",    ("Arizona State", "LSU")),
+    CollegeOverride("Michael Penix Jr.", ("Indiana", "Washington")),
+    CollegeOverride("Geno Smith",        ("West Virginia",)),  # no transfer; defensive fill
+    CollegeOverride("Jameis Winston",    ("Florida State",)),
+    CollegeOverride("Kenny Pickett",     ("Pittsburgh",)),
+    CollegeOverride("Jordan Love",       ("Utah State",)),
+
+    # --- Missing-data fills for HOFers / pre-1994 players where the
+    # college didn't carry through (supplemental-draft picks like
+    # Reggie White, undrafted FAs like Cliff Harris) ---
+    CollegeOverride("Reggie White",      ("Tennessee",)),
+    CollegeOverride("Cliff Harris",      ("Ouachita Baptist",)),
+    CollegeOverride("Steve Young",       ("BYU",)),
+    CollegeOverride("Cris Carter",       ("Ohio State",)),
+    CollegeOverride("Bernie Kosar",      ("Miami (FL)",)),
+    CollegeOverride("Mike Rozier",       ("Nebraska",)),
+    CollegeOverride("Gary Zimmerman",    ("Oregon",)),
+    CollegeOverride("Brian Bosworth",    ("Oklahoma",)),
+    CollegeOverride("Steve Walsh",       ("Miami (FL)",)),
+    CollegeOverride("Rob Moore",         ("Syracuse",)),
+    CollegeOverride("Josh Gordon",       ("Baylor", "Utah"),
+                    player_id="pfr:GordJo02"),
+    CollegeOverride("Terrelle Pryor",    ("Ohio State",)),
+    CollegeOverride("Ahmad Brooks",      ("Virginia",)),
+]

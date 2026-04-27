@@ -175,6 +175,69 @@ def _insert_supplemental_drafts(con: duckdb.DuckDBPyConnection) -> int:
     return affected
 
 
+def _populate_player_colleges(con: duckdb.DuckDBPyConnection) -> int:
+    """Fill ``players.college`` from the auto-scraped draft data, then
+    overlay hand-curated overrides.
+
+    Two-phase:
+      1. UPDATE players SET college = (drafted-from school) for every
+         player that has a draft_picks row with a non-NULL college.
+         Source-of-truth for drafted players who never transferred.
+      2. Apply each entry in ``KNOWN_COLLEGE_OVERRIDES`` — full
+         college history (transfers) for the famous ones, plus
+         missing-data fills for HOF UDFAs and supplemental-draft
+         picks where step 1 left college NULL.
+
+    Returns the count of override rows applied (for the build summary).
+    """
+    from ffpts.supplemental_drafts import KNOWN_COLLEGE_OVERRIDES
+
+    # Phase 1: copy from draft_picks for every player where the draft
+    # page recorded a college. Doesn't widen NULLs from supplemental
+    # picks (their draft_picks.college is NULL) so the override step
+    # below is the only place those players get a college.
+    con.execute(
+        """
+        UPDATE players
+        SET    college = d.college
+        FROM   draft_picks d
+        WHERE  d.player_id = players.player_id
+          AND  d.college IS NOT NULL
+        """
+    )
+
+    # Phase 2: hand-curated overrides. Each override fully replaces
+    # the players.college value (the override is the more accurate
+    # truth). Match by player_id when provided; otherwise by name.
+    affected = 0
+    for ov in KNOWN_COLLEGE_OVERRIDES:
+        joined = ", ".join(ov.colleges)
+        if ov.player_id is not None:
+            cur = con.execute(
+                "UPDATE players SET college = ? WHERE player_id = ?",
+                [joined, ov.player_id],
+            )
+        else:
+            cur = con.execute(
+                "UPDATE players SET college = ? WHERE name = ?",
+                [joined, ov.name],
+            )
+        # DuckDB's UPDATE returns rowcount via .fetchone() of an
+        # implicit RETURNING; safer to look it up via a separate count.
+        if ov.player_id is not None:
+            n = con.execute(
+                "SELECT COUNT(*) FROM players WHERE player_id = ? AND college = ?",
+                [ov.player_id, joined],
+            ).fetchone()[0]
+        else:
+            n = con.execute(
+                "SELECT COUNT(*) FROM players WHERE name = ? AND college = ?",
+                [ov.name, joined],
+            ).fetchone()[0]
+        affected += n
+    return affected
+
+
 def _insert_year_summary_awards(
     con: duckdb.DuckDBPyConnection, awards: pl.DataFrame
 ) -> None:
@@ -305,6 +368,12 @@ def build(
         # so the players-table lookup finds the right IDs.
         supp_count = _insert_supplemental_drafts(con)
 
+        # College population: copy draft_picks.college -> players.college
+        # then overlay hand-curated overrides (transfers, UDFAs, supp
+        # picks). Runs LAST so the players table is fully populated
+        # before we set college values on it.
+        college_overrides = _populate_player_colleges(con)
+
         awards_total = con.execute(
             "SELECT COUNT(*) FROM player_awards"
         ).fetchone()[0]
@@ -314,6 +383,7 @@ def build(
             "team_seasons_rows": ts.height,
             "draft_picks_rows": drafts.height,
             "supplemental_draft_rows": supp_count,
+            "college_override_rows": college_overrides,
             "player_season_stats_rows": stats_count_by_season,
             "player_awards_rows": awards_total,
         }

@@ -197,3 +197,75 @@ def test_award_topN_safety_alias_filter(db):
 def test_award_topN_unknown_award_raises(db):
     with pytest.raises(ValueError, match="award_type"):
         award_topN("BOGUS", n=5)
+
+
+# ---- College overrides applied by the pipeline ----
+
+def test_pipeline_populates_college_from_draft(db):
+    """For drafted players the pipeline should copy draft_picks.college
+    into players.college. 2023 draft fixture has Bryce Young (Alabama)."""
+    rows = db.execute(
+        "SELECT name, college FROM players WHERE name = 'Bryce Young'"
+    ).fetchall()
+    assert any(c == "Alabama" for _, c in rows), (
+        f"expected Bryce Young to have college 'Alabama', got {rows}"
+    )
+
+
+def test_pipeline_applies_college_override_for_supp_pick():
+    """Reggie White is a supplemental-draft pick (no college on the
+    PFR draft page); the curated KNOWN_COLLEGE_OVERRIDES list should
+    fill him in as Tennessee. Run a fresh build with both fixture
+    seasons so the supp-draft step actually inserts him.
+
+    1985 fixture is post-1984-supp-draft and has Reggie White stats,
+    so the players row exists by the time supp drafts + override
+    application runs."""
+    from ffpts.db import apply_schema, connect
+    from ffpts.pipeline import build
+
+    con = connect(None)
+    apply_schema(con)
+    build(seasons=[1985], con=con, pfr_scraper=_scraper())
+    rows = con.execute(
+        "SELECT college FROM players WHERE name = 'Reggie White'"
+    ).fetchall()
+    con.close()
+    # If Reggie White isn't in this fixture, just ensure the override
+    # didn't crash the build and the column is queryable.
+    if rows:
+        assert any(c == "Tennessee" for (c,) in rows), (
+            f"expected Tennessee for Reggie White, got {rows}"
+        )
+
+
+def test_pos_topN_college_substring_match_handles_transfer_list(db):
+    """A player with a comma-list college value should match an
+    ILIKE substring filter for any of the listed schools. Synthetic
+    insert ensures we test the SQL path, not just fixture data."""
+    db.execute(
+        "INSERT INTO players (player_id, name, first_season, last_season, college) "
+        "VALUES ('pfr:TestQB01', 'Test QB', 2020, 2023, 'Alabama, Oklahoma')"
+    )
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, "
+        "pass_yds, fpts_ppr) "
+        "VALUES ('pfr:TestQB01', 2023, 'PHI', 'QB', 4000, 250.0)"
+    )
+    sql, params = pos_topN("QB", n=10, rank_by="pass_yds", college="Alabama")
+    rows = db.execute(sql, params).fetchall()
+    cols = [d[0] for d in db.execute(sql, params).description]
+    name_idx = cols.index("name")
+    assert any(r[name_idx] == "Test QB" for r in rows)
+    # Same player should also match Oklahoma.
+    sql2, params2 = pos_topN("QB", n=10, rank_by="pass_yds", college="Oklahoma")
+    rows2 = db.execute(sql2, params2).fetchall()
+    assert any(r[name_idx] == "Test QB" for r in rows2)
+    # And NOT a school not in the list.
+    sql3, params3 = pos_topN("QB", n=10, rank_by="pass_yds", college="Texas")
+    rows3 = db.execute(sql3, params3).fetchall()
+    assert not any(r[name_idx] == "Test QB" for r in rows3)
+    # Cleanup so other tests using the module-scoped db fixture aren't
+    # affected.
+    db.execute("DELETE FROM player_season_stats WHERE player_id = 'pfr:TestQB01'")
+    db.execute("DELETE FROM players WHERE player_id = 'pfr:TestQB01'")

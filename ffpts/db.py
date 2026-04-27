@@ -24,11 +24,17 @@ DEFAULT_DB_PATH = Path("data/ff.duckdb")
 SCHEMA_DDL: list[str] = [
     # ---------- reference tables ----------
     """
+    -- ``players`` is the canonical home for player metadata that
+    -- isn't tied to a specific season. ``college`` is populated from
+    -- two sources: PFR draft pages (drafted-from school, copied via
+    -- pipeline UPDATE) and curated overrides for transfers / UDFAs /
+    -- supplemental-draft picks whose college isn't on the draft page.
     CREATE TABLE IF NOT EXISTS players (
         player_id     TEXT PRIMARY KEY,   -- PFR slug, e.g. "McCaCh01"
         name          TEXT NOT NULL,
         first_season  INTEGER,
-        last_season   INTEGER
+        last_season   INTEGER,
+        college       TEXT                -- comma-list, e.g. "Alabama, Oklahoma"
     );
     """,
     """
@@ -178,7 +184,11 @@ VIEWS_DDL: list[str] = [
             d.round        AS draft_round,
             d.overall_pick AS draft_overall_pick,
             d.team         AS draft_team,
-            d.college      AS college,
+            -- College sourced from players.college (canonical, includes
+            -- curated transfer/UDFA overrides). draft_picks.college is
+            -- the underlying scrape; the pipeline copies it forward and
+            -- then applies overrides on top.
+            p.college      AS college,
             t.conference,
             t.division,
             t.franchise
@@ -221,6 +231,7 @@ def connect(path: str | Path | None = None) -> duckdb.DuckDBPyConnection:
 # makes this idempotent.
 _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("draft_picks", "college", "TEXT"),
+    ("players",     "college", "TEXT"),
 ]
 
 
