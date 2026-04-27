@@ -178,6 +178,19 @@ def test_pipeline_v_award_winners_view_works(populated_db):
     assert len(rows) >= 1
 
 
+def test_pipeline_wpmoy_landed_for_1985_dwight_stephenson(populated_db):
+    """WPMOY (Walter Payton Man of the Year) is on PFR's per-year
+    summary page, not in stat-table awards cells. The pipeline now
+    parses it from /years/YYYY/ and inserts into player_awards
+    alongside the inline awards."""
+    con, _ = populated_db
+    rows = con.execute(
+        "SELECT name FROM v_award_winners "
+        "WHERE  award_type = 'WPMOY' AND season = 1985"
+    ).fetchall()
+    assert rows == [("Dwight Stephenson",)]
+
+
 def test_pipeline_player_awards_idempotent_on_rerun():
     """Re-running build for the same season replaces awards cleanly."""
     from ffpts.db import apply_schema, connect

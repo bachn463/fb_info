@@ -15,6 +15,7 @@ from ffpts.parsers.receiving import parse_receiving
 from ffpts.parsers.returns import parse_returns
 from ffpts.parsers.rushing import parse_rushing
 from ffpts.parsers.standings import parse_standings
+from ffpts.parsers.year_summary_awards import parse_year_summary_awards
 
 __all__ = [
     "extract_table_rows",
@@ -29,5 +30,6 @@ __all__ = [
     "parse_returns",
     "parse_rushing",
     "parse_standings",
+    "parse_year_summary_awards",
     "unwrap_pfr_comments",
 ]

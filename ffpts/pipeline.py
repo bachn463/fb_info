@@ -175,6 +175,41 @@ def _insert_supplemental_drafts(con: duckdb.DuckDBPyConnection) -> int:
     return affected
 
 
+def _insert_year_summary_awards(
+    con: duckdb.DuckDBPyConnection, awards: pl.DataFrame
+) -> None:
+    """Insert year-summary awards (WPMOY etc) into player_awards.
+
+    Also upserts the matching ``players`` rows since many winners
+    (offensive linemen, special teamers) don't have stats on any of
+    our parsed pages — without an explicit upsert here the INNER JOIN
+    in ``v_award_winners`` would drop them.
+
+    Idempotent — uses ON CONFLICT DO UPDATE so re-running build for
+    the same year refreshes rather than duplicates.
+    """
+    if awards.is_empty():
+        return
+    con.register("staging_summary_awards", awards)
+    # Upsert the players row first so v_award_winners' INNER JOIN
+    # finds it. season is reused as both first_season and last_season
+    # for an upsert that doesn't widen.
+    _upsert_players_from(
+        con,
+        "(SELECT player_id, name, season FROM staging_summary_awards)",
+    )
+    con.execute(
+        """
+        INSERT INTO player_awards (player_id, season, award_type, vote_finish)
+        SELECT player_id, season, award_type, vote_finish
+        FROM   staging_summary_awards
+        ON CONFLICT (player_id, season, award_type) DO UPDATE SET
+            vote_finish = excluded.vote_finish
+        """
+    )
+    con.unregister("staging_summary_awards")
+
+
 def _attach_team_records(
     con: duckdb.DuckDBPyConnection,
     records: pl.DataFrame,
@@ -245,7 +280,10 @@ def build(
         )
         _attach_team_records(con, records, seasons_list)
 
-        # Player-season stats + awards per year.
+        # Player-season stats + inline awards per year. Inline awards
+        # come from the per-row `awards` cell on stat tables (MVP, OPOY,
+        # PB, AP_FIRST, etc.); they get derived + inserted inside
+        # _replace_player_season_stats.
         stats_count_by_season: dict[int, int] = {}
         for season in seasons_list:
             stats = ingest_pfr.load_player_seasons(
@@ -253,6 +291,15 @@ def build(
             )
             _replace_player_season_stats(con, stats, season)
             stats_count_by_season[season] = stats.height
+
+        # Year-summary awards (WPMOY etc) live on the /years/YYYY/
+        # page only. Insert AFTER the per-season stats loop so the
+        # season-level DELETE inside _replace_player_season_stats
+        # doesn't clobber them.
+        summary_awards = ingest_pfr.load_year_summary_awards(
+            seasons_list, scraper=pfr_scraper
+        )
+        _insert_year_summary_awards(con, summary_awards)
 
         # Supplemental drafts: name-lookup insertion after stats land
         # so the players-table lookup finds the right IDs.

@@ -35,6 +35,7 @@ from ffpts.parsers import (
     parse_returns,
     parse_rushing,
     parse_standings,
+    parse_year_summary_awards,
 )
 
 
@@ -187,6 +188,33 @@ def load_draft_picks(
 # ---------------------------------------------------------------------------
 # Team seasons (standings) — produces W/L overrides for the era table
 # ---------------------------------------------------------------------------
+
+def load_year_summary_awards(
+    seasons: Iterable[int],
+    *,
+    scraper: _ScraperLike,
+) -> pl.DataFrame:
+    """Awards that live only on PFR's per-year summary page (WPMOY, ...).
+
+    Same HTML page as ``load_team_season_records`` so cache hits make
+    this free after the first fetch. Returns rows shaped for direct
+    INSERT BY NAME into ``player_awards``.
+    """
+    schema = {
+        "player_id":   pl.Utf8,
+        "name":        pl.Utf8,
+        "season":      pl.Int64,
+        "award_type":  pl.Utf8,
+        "vote_finish": pl.Int64,
+    }
+    rows: list[dict] = []
+    for season in seasons:
+        html = scraper.get(f"/years/{season}/")
+        rows.extend(parse_year_summary_awards(html, season))
+    if not rows:
+        return pl.DataFrame(schema=schema)
+    return pl.DataFrame(rows, schema=schema)
+
 
 def load_team_season_records(
     seasons: Iterable[int],
