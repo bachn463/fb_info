@@ -1227,16 +1227,40 @@ def ask_compare(
 # non-empty answer sets on the canonical 1970-2025 build, and to skip
 # combinations that don't exist (e.g. no point ranking by `def_sacks`
 # before 1982 since that's when sacks became an official stat).
-_RANDOM_RANK_BY: list[str] = [
-    "rush_yds", "rush_td", "rush_att",
+#
+# List-duplication is the weighting mechanism. Target distribution
+# (chosen so trivia leans toward the stats fans care about most):
+#   offense (pass+rush+rec): ~58%
+#   fantasy:                 ~20%
+#   defense:                 ~14%
+#   special teams (K + ret):  ~8%
+_RANDOM_RANK_BY: list[str] = (
+    # Passing
+    ["pass_yds"] * 3 + ["pass_td"] * 3 + ["pass_cmp"] * 2 + ["pass_rating"] * 2
+    # Rushing
+    + ["rush_yds"] * 3 + ["rush_td"] * 3 + ["rush_att"] * 2
+    # Receiving
+    + ["rec_yds"] * 3 + ["rec"] * 3 + ["rec_td"] * 3 + ["targets"] * 2
+    # Fantasy
+    + ["fpts_ppr"] * 4 + ["fpts_half"] * 3 + ["fpts_std"] * 3
+    # Defense (down-weighted vs. the offense categories)
+    + ["def_sacks"] * 2 + ["def_int"] * 2 + ["def_int_td"]
+    + ["def_tackles_combined"] + ["def_pass_def"]
+    # Special teams (rarest — kickers and return men are a niche game)
+    + ["fg_made"] + ["fg_long"]
+    + ["kr_yds"] + ["pr_yds"]
+)
+
+# Used to apply richer filter combinations when the rank-by is on the
+# offensive / fantasy side — offense trivia leans harder on team /
+# award / rookie qualifiers since the answer space is broader and a
+# bare "top 10 pass_yds" question is too easy.
+_OFFENSE_AND_FANTASY_RANK_BY: frozenset[str] = frozenset({
     "pass_yds", "pass_td", "pass_cmp", "pass_rating",
+    "rush_yds", "rush_td", "rush_att",
     "rec_yds", "rec", "rec_td", "targets",
     "fpts_ppr", "fpts_half", "fpts_std",
-    "def_sacks", "def_int", "def_int_td",
-    "def_tackles_combined", "def_pass_def",
-    "fg_made", "fg_long",
-    "kr_yds", "pr_yds",
-]
+})
 # Stats with restricted era support — random picks for these add a
 # matching --start so we don't return empty answer sets.
 _STAT_MIN_SEASON: dict[str, int] = {
@@ -1326,9 +1350,21 @@ def _random_trivia_template(rng) -> dict:
         "unique":   rng.choice([True, True, False]),  # 2/3 unique
     }
 
-    # Year range with prob ~0.45 — start ≤ end always enforced.
+    # Filter intensity: offense / fantasy templates get richer
+    # qualifiers (year ranges, team/division/conference, award, rookie)
+    # because the unfiltered "top 10 pass_yds" question is too easy and
+    # the candidate pool is huge; defense and special-teams trivia
+    # already has a small enough candidate pool that piling on filters
+    # makes most attempts return empty.
+    is_off = rank_by in _OFFENSE_AND_FANTASY_RANK_BY
+    p_year   = 0.65 if is_off else 0.35
+    p_geo    = 0.45 if is_off else 0.20  # cumulative across team/div/conf
+    p_award  = 0.40 if is_off else 0.15  # cumulative across has/ever
+    p_rookie = 0.15 if is_off else 0.05
+
+    # Year range — start ≤ end always enforced.
     min_floor = _STAT_MIN_SEASON.get(rank_by, 1970)
-    if rng.random() < 0.45:
+    if rng.random() < p_year:
         start = rng.randint(min_floor, 2018)
         end   = rng.randint(start, 2024)
         spec["start"] = start
@@ -1339,23 +1375,25 @@ def _random_trivia_template(rng) -> dict:
         if min_floor > 1970:
             spec["start"] = min_floor
 
-    # Geo: at most one of team / division / conference.
+    # Geo: at most one of team / division / conference. Split the
+    # cumulative budget into thirds so each variant has equal share.
     geo = rng.random()
-    if geo < 0.10:
+    if geo < p_geo / 3:
         spec["team"] = rng.choice(_RANDOM_TEAMS)
-    elif geo < 0.20:
+    elif geo < 2 * p_geo / 3:
         spec["division"] = rng.choice(_RANDOM_DIVISIONS)
-    elif geo < 0.30:
+    elif geo < p_geo:
         spec["conference"] = rng.choice(_RANDOM_CONFERENCES)
 
-    # Award filter: at most one of has_award / ever_won_award.
+    # Award filter: at most one of has_award / ever_won_award. Skew
+    # toward ever_won (richer answer space than has_award-that-season).
     aw = rng.random()
-    if aw < 0.10:
+    if aw < p_award * 0.4:
         spec["has_award"] = [rng.choice(_RANDOM_AWARDS)]
-    elif aw < 0.25:
+    elif aw < p_award:
         spec["ever_won_award"] = [rng.choice(_RANDOM_AWARDS)]
 
-    if rng.random() < 0.10:
+    if rng.random() < p_rookie:
         spec["rookie_only"] = True
 
     return spec
