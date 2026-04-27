@@ -142,6 +142,22 @@ SCHEMA_DDL: list[str] = [
         PRIMARY KEY (player_id, season, team)
     );
     """,
+    # ---------- awards (per player-season, multiple per row) ----------
+    """
+    CREATE TABLE IF NOT EXISTS player_awards (
+        player_id    TEXT    NOT NULL,
+        season       INTEGER NOT NULL,
+        award_type   TEXT    NOT NULL,        -- 'MVP', 'OPOY', 'DPOY',
+                                              -- 'OROY', 'DROY', 'CPOY',
+                                              -- 'WPMOY', 'PB',
+                                              -- 'AP_FIRST', 'AP_SECOND'
+        vote_finish  INTEGER,                 -- 1 = won, 2+ = placing.
+                                              -- NULL for binary awards
+                                              -- (PB, AP_FIRST,
+                                              -- AP_SECOND, WPMOY).
+        PRIMARY KEY (player_id, season, award_type)
+    );
+    """,
 ]
 
 
@@ -166,6 +182,16 @@ VIEWS_DDL: list[str] = [
     CREATE OR REPLACE VIEW v_flex_seasons AS
     SELECT * FROM v_player_season_full
     WHERE  position IN ('RB', 'WR', 'TE');
+    """,
+    """
+    CREATE OR REPLACE VIEW v_award_winners AS
+    SELECT  pa.player_id,
+            pa.season,
+            pa.award_type,
+            pa.vote_finish,
+            p.name
+    FROM    player_awards pa
+    JOIN    players p USING (player_id);
     """,
 ]
 

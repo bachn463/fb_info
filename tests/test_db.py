@@ -17,18 +17,18 @@ def _view_names(con):
 
 
 def test_schema_creates_expected_tables(db):
-    assert _table_names(db) == {"players", "draft_picks", "team_seasons", "player_season_stats"}
+    assert _table_names(db) == {"players", "draft_picks", "team_seasons", "player_season_stats", "player_awards"}
 
 
 def test_schema_creates_expected_views(db):
-    assert _view_names(db) == {"v_player_season_full", "v_flex_seasons"}
+    assert _view_names(db) == {"v_player_season_full", "v_flex_seasons", "v_award_winners"}
 
 
 def test_apply_schema_is_idempotent(db):
     # Re-apply on top of an already-initialized connection — must not raise.
     from ffpts.db import apply_schema
     apply_schema(db)
-    assert _table_names(db) == {"players", "draft_picks", "team_seasons", "player_season_stats"}
+    assert _table_names(db) == {"players", "draft_picks", "team_seasons", "player_season_stats", "player_awards"}
 
 
 def test_player_season_stats_pk_rejects_duplicates(db):
@@ -93,7 +93,65 @@ def test_init_db_returns_ready_connection(tmp_path):
     db_path = tmp_path / "test.duckdb"
     con = init_db(db_path)
     try:
-        assert _table_names(con) == {"players", "draft_picks", "team_seasons", "player_season_stats"}
+        assert _table_names(con) == {"players", "draft_picks", "team_seasons", "player_season_stats", "player_awards"}
     finally:
         con.close()
     assert db_path.exists()
+
+
+# --- player_awards ------------------------------------------------------
+
+
+def test_player_awards_pk_rejects_duplicates(db):
+    db.execute("INSERT INTO players (player_id, name) VALUES ('p1', 'P')")
+    db.execute(
+        "INSERT INTO player_awards (player_id, season, award_type, vote_finish) "
+        "VALUES ('p1', 2023, 'MVP', 1)"
+    )
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            "INSERT INTO player_awards (player_id, season, award_type, vote_finish) "
+            "VALUES ('p1', 2023, 'MVP', 2)"
+        )
+
+
+def test_player_awards_supports_multiple_award_types_per_season(db):
+    """A player can win MVP and OPOY in the same year — separate award_types,
+    different rows, no PK violation."""
+    db.execute("INSERT INTO players (player_id, name) VALUES ('p1', 'P')")
+    db.execute(
+        "INSERT INTO player_awards (player_id, season, award_type, vote_finish) "
+        "VALUES ('p1', 2023, 'MVP', 1), ('p1', 2023, 'OPOY', 1), "
+        "       ('p1', 2023, 'PB', NULL), ('p1', 2023, 'AP_FIRST', NULL)"
+    )
+    n = db.execute(
+        "SELECT COUNT(*) FROM player_awards WHERE player_id = 'p1' AND season = 2023"
+    ).fetchone()[0]
+    assert n == 4
+
+
+def test_player_awards_vote_finish_can_be_null(db):
+    """Binary awards (PB, AP_FIRST/SECOND, WPMOY) carry NULL vote_finish."""
+    db.execute("INSERT INTO players (player_id, name) VALUES ('p1', 'P')")
+    db.execute(
+        "INSERT INTO player_awards (player_id, season, award_type) "
+        "VALUES ('p1', 2023, 'PB')"
+    )
+    finish = db.execute(
+        "SELECT vote_finish FROM player_awards WHERE player_id = 'p1'"
+    ).fetchone()[0]
+    assert finish is None
+
+
+def test_v_award_winners_joins_player_name(db):
+    db.execute(
+        "INSERT INTO players (player_id, name) VALUES ('p1', 'Lamar Jackson')"
+    )
+    db.execute(
+        "INSERT INTO player_awards (player_id, season, award_type, vote_finish) "
+        "VALUES ('p1', 2023, 'MVP', 1)"
+    )
+    row = db.execute(
+        "SELECT name, season, award_type, vote_finish FROM v_award_winners"
+    ).fetchone()
+    assert row == ("Lamar Jackson", 2023, "MVP", 1)
