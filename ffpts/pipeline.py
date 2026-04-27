@@ -30,7 +30,9 @@ from ffpts.db import DEFAULT_DB_PATH, init_db
 from ffpts.ingest import build_team_seasons
 
 # Columns in the ingest output that don't belong in player_season_stats.
-_STATS_EXTRA_COLUMNS = {"name", "team_slug"}
+# `awards` is the raw PFR cell string carried through for the awards
+# ingest step; not stored on the wide stats fact table.
+_STATS_EXTRA_COLUMNS = {"name", "team_slug", "awards"}
 # Same idea for draft_picks.
 _DRAFT_EXTRA_COLUMNS = {"name", "position"}
 

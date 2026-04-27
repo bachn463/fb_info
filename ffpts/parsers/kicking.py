@@ -39,6 +39,7 @@ def parse_kicking(html: str, season: int) -> list[dict]:
             "team":      raw.get("team_name_abbr"),
             "team_slug": raw.get("_team_slug"),
             "position":  raw.get("pos"),
+            "awards":    raw.get("awards"),
         }
         for src, dst in _INT_FIELDS.items():
             out[dst] = _coerce_int(raw.get(src))

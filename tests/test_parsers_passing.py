@@ -55,6 +55,20 @@ def test_passing_2023_tagovailoa_top_row(passing_2023):
     assert tua["pass_rating"] == pytest.approx(101.1, abs=0.05)
 
 
+def test_passing_2023_surfaces_awards_cell(passing_2023):
+    """Awards cell flows through the parser as a raw string for the
+    awards ingest step to parse later."""
+    tua = _by_slug(passing_2023, "TagoTu00")
+    assert tua["awards"] == "PB,AP CPoY-5"
+    mahomes = _by_slug(passing_2023, "MahoPa00")
+    assert mahomes["awards"] == "PB,AP MVP-7"
+
+
+def test_passing_1985_marino_awards(passing_1985):
+    marino = _by_slug(passing_1985, "MariDa00")
+    assert marino["awards"] == "PB,AP-1"
+
+
 def test_passing_2023_includes_other_known_starters(passing_2023):
     slugs = {r["player_id"] for r in passing_2023}
     assert "pfr:MahoPa00" in slugs   # Patrick Mahomes

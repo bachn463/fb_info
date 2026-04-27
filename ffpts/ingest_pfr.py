@@ -1,7 +1,6 @@
-"""Pre-1999 PFR ingest: stitches the 8 page parsers into our schema rows.
+"""PFR ingest: stitches the 8 page parsers into our schema rows.
 
-Mirrors the shape of ``ffpts.ingest`` but pulls from PFR HTML instead
-of nflverse parquet. Three top-level functions:
+Three top-level functions:
 
 - ``load_player_seasons(seasons, scraper)`` — fetches and merges
   passing / rushing / receiving / defense / kicking / returns into one
@@ -62,8 +61,12 @@ _PAGE_PARSERS: list[tuple[str, Callable[[str, int], list[dict]]]] = [
 # Fields used as identity keys; never overwritten once set.
 _KEY_FIELDS = {"player_id", "season", "team"}
 # Fields where the first non-None value wins. (Player metadata that
-# every page reports.)
-_FIRST_WINS = {"name", "position", "team_slug", "age", "games", "games_started"}
+# every page reports — the same player on the passing and rushing
+# pages reports identical name/position/age/games/awards.)
+_FIRST_WINS = {
+    "name", "position", "team_slug", "age", "games", "games_started",
+    "awards",
+}
 
 # Skill positions get fpts computed; everyone else gets NULL.
 _SKILL_POSITIONS = {"QB", "RB", "WR", "TE", "FB", "HB"}
