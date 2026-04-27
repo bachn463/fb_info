@@ -699,20 +699,29 @@ def _run_trivia_loop(
         matches = _match_guess(guess, answers, found)
         if not matches:
             typer.echo(f"  Not in the top {n}.")
-        elif len(matches) > 1:
+        elif len(matches) > 1 and len({_player_identity(answers[i]) for i in matches}) > 1:
+            # Genuinely ambiguous — matches refer to multiple distinct
+            # players. Don't list candidate names (would spoil
+            # answers).
             typer.echo(
-                f"  Ambiguous — matches {len(matches)} answers. "
-                "Be more specific."
+                f"  Ambiguous — matches {len(matches)} answers across "
+                "multiple players. Be more specific."
             )
         else:
-            i = matches[0]
-            found.add(i)
-            row = answers[i]
-            rank = i + 1
-            typer.echo(
-                f"  Correct! #{rank} {row['name']}, {row['season']} "
-                f"({row['team']}, {rank_by}={_fmt_cell(row['rank_value'])})."
-            )
+            # Either a single match, or multiple matches that are all
+            # the same player (same name + draft fingerprint). Credit
+            # all of them on this one guess so a player who appears
+            # multiple times in the list (e.g. with --no-unique) only
+            # has to be guessed once.
+            for i in matches:
+                found.add(i)
+            for i in sorted(matches):
+                row = answers[i]
+                rank = i + 1
+                typer.echo(
+                    f"  Correct! #{rank} {row['name']}, {row['season']} "
+                    f"({row['team']}, {rank_by}={_fmt_cell(row['rank_value'])})."
+                )
 
     # Loop exited (either all found, or stdin closed). Print the full
     # ranked list either way so the user always leaves with the answers.
@@ -735,6 +744,23 @@ def _match_guess(guess: str, answers: list[dict], found: set[int]) -> list[int]:
         i for i, row in enumerate(answers)
         if i not in found and needle in (row["name"] or "").lower()
     ]
+
+
+def _player_identity(row: dict) -> tuple:
+    """A tuple that identifies the underlying player across multiple
+    answer rows. Two answer dicts with the same identity are the same
+    person — used to credit a single guess against all of their
+    appearances when --no-unique is in effect.
+
+    (name, draft_year, draft_overall_pick) — name plus the draft
+    fingerprint, which is unique per player. Undrafted players land
+    on (name, None, None) which is still unique within a top-N answer
+    set in practice."""
+    return (
+        row.get("name"),
+        row.get("draft_year"),
+        row.get("draft_overall_pick"),
+    )
 
 
 def _hint_layers(row: dict, *, rank_by: str) -> list[str]:
@@ -1017,12 +1043,39 @@ _COMPARE_STATS = (
 )
 
 
-def _resolve_player(con: duckdb.DuckDBPyConnection, name: str) -> tuple[str, str] | None:
+def _player_career_blurb(con: duckdb.DuckDBPyConnection, player_id: str) -> str:
+    """Return ``"(YYYY-YYYY, TM1/TM2/...)"`` describing the player's
+    seasons + teams. Used for compare disambiguation so users can
+    pick between same-name players. Empty string if no stats rows."""
+    row = con.execute(
+        """
+        SELECT MIN(season),
+               MAX(season),
+               STRING_AGG(team, '/' ORDER BY first_season)
+        FROM (
+            SELECT season, team, MIN(season) OVER (PARTITION BY team) AS first_season
+            FROM   player_season_stats
+            WHERE  player_id = ?
+        )
+        """,
+        [player_id],
+    ).fetchone()
+    if not row or row[0] is None:
+        return ""
+    first, last, teams = row
+    return f"({first}-{last}, {teams})"
+
+
+def _resolve_player(
+    con: duckdb.DuckDBPyConnection, name: str
+) -> tuple[str, str] | None:
     """Resolve a name fragment to (player_id, exact_name).
 
     Tries exact (case-insensitive) match first; falls back to substring
-    if exactly one substring match exists. Returns None if zero or
-    multiple matches and prints an error to stderr.
+    if exactly one substring match exists. When multiple players match
+    (same exact spelling, e.g. two "Adrian Peterson"s), prints a
+    disambiguation list that includes each candidate's year range and
+    teams so the caller can re-invoke with ``--p1-id`` / ``--p2-id``.
     """
     rows = con.execute(
         "SELECT player_id, name FROM players WHERE LOWER(name) = LOWER(?)",
@@ -1030,6 +1083,20 @@ def _resolve_player(con: duckdb.DuckDBPyConnection, name: str) -> tuple[str, str
     ).fetchall()
     if len(rows) == 1:
         return rows[0]
+    if len(rows) > 1:
+        typer.echo(
+            f"  {len(rows)} players match {name!r} exactly:",
+            err=True,
+        )
+        for pid, exact in rows:
+            blurb = _player_career_blurb(con, pid) or "(no stats rows)"
+            typer.echo(f"    --p?-id {pid}  {exact} {blurb}", err=True)
+        typer.echo(
+            "  Re-run with --p1-id / --p2-id pfr:Slug to pick.",
+            err=True,
+        )
+        return None
+
     rows = con.execute(
         "SELECT player_id, name FROM players WHERE LOWER(name) LIKE LOWER(?)",
         [f"%{name}%"],
@@ -1039,37 +1106,98 @@ def _resolve_player(con: duckdb.DuckDBPyConnection, name: str) -> tuple[str, str
     if len(rows) == 0:
         typer.echo(f"  No player matches {name!r}.", err=True)
         return None
-    sample = ", ".join(r[1] for r in rows[:5])
-    more = "..." if len(rows) > 5 else ""
     typer.echo(
-        f"  {len(rows)} players match {name!r}: {sample}{more}. "
-        "Be more specific.",
+        f"  {len(rows)} players match {name!r}:",
+        err=True,
+    )
+    for pid, exact in rows[:10]:
+        blurb = _player_career_blurb(con, pid) or "(no stats rows)"
+        typer.echo(f"    --p?-id {pid}  {exact} {blurb}", err=True)
+    if len(rows) > 10:
+        typer.echo(f"    ... and {len(rows) - 10} more", err=True)
+    typer.echo(
+        "  Be more specific or pass --p1-id / --p2-id pfr:Slug.",
         err=True,
     )
     return None
 
 
+def _lookup_player_by_id(
+    con: duckdb.DuckDBPyConnection, player_id: str
+) -> tuple[str, str] | None:
+    """Look up (player_id, name) by exact player_id. Returns None and
+    prints an error if no row matches."""
+    row = con.execute(
+        "SELECT player_id, name FROM players WHERE player_id = ?",
+        [player_id],
+    ).fetchone()
+    if row is None:
+        typer.echo(f"  No player with player_id={player_id!r}.", err=True)
+        return None
+    return row
+
+
 @ask_app.command("compare")
 def ask_compare(
-    player1: str = typer.Argument(..., help="First player name (substring OK)."),
-    player2: str = typer.Argument(..., help="Second player name (substring OK)."),
+    player1: str = typer.Argument(
+        "", help="First player name (substring OK). Optional if --p1-id is given.",
+    ),
+    player2: str = typer.Argument(
+        "", help="Second player name (substring OK). Optional if --p2-id is given.",
+    ),
+    p1_id: str | None = typer.Option(
+        None, "--p1-id",
+        help="Disambiguation override: exact pfr:Slug for player 1. "
+             "Use when two players share the same display name "
+             "(printed alongside the candidate list when name "
+             "resolution finds multiple matches).",
+    ),
+    p2_id: str | None = typer.Option(
+        None, "--p2-id",
+        help="Disambiguation override: exact pfr:Slug for player 2.",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
 ) -> None:
     """Career head-to-head between two players.
 
     Shows career totals for major offensive / defensive / special-teams
     stats side-by-side, plus seasons played and best-single-season for
-    each player. Each player resolved via case-insensitive substring
-    match against the players table; ambiguous matches error out.
+    each player. Each player resolved via case-insensitive name match
+    against the players table; ambiguous matches print a candidate
+    list with year ranges + teams and exit non-zero — re-run with
+    ``--p1-id`` / ``--p2-id pfr:Slug`` to pick.
     """
     con = _open_db(db)
     try:
-        r1 = _resolve_player(con, player1)
-        r2 = _resolve_player(con, player2)
+        if p1_id is not None:
+            r1 = _lookup_player_by_id(con, p1_id)
+        elif player1:
+            r1 = _resolve_player(con, player1)
+        else:
+            typer.echo("  Pass a player1 name or --p1-id.", err=True)
+            r1 = None
+        if p2_id is not None:
+            r2 = _lookup_player_by_id(con, p2_id)
+        elif player2:
+            r2 = _resolve_player(con, player2)
+        else:
+            typer.echo("  Pass a player2 name or --p2-id.", err=True)
+            r2 = None
+
         if r1 is None or r2 is None:
             raise typer.Exit(code=2)
         pid1, name1 = r1
         pid2, name2 = r2
+
+        # When the display names collide, append the year/team blurb so
+        # the printed table columns are distinguishable.
+        if name1 == name2:
+            b1 = _player_career_blurb(con, pid1)
+            b2 = _player_career_blurb(con, pid2)
+            if b1:
+                name1 = f"{name1} {b1}"
+            if b2:
+                name2 = f"{name2} {b2}"
 
         agg_cols = ", ".join(f"SUM({c}) AS {c}" for c in _COMPARE_STATS)
         meta = (
@@ -1095,54 +1223,152 @@ def ask_compare(
 # `trivia daily` / `trivia random` — template-driven trivia
 # ---------------------------------------------------------------------------
 
-# Each template = a kwargs dict matching `pos_topN` parameters. The
-# trivia loop runs over the result like a normal `trivia play`. Curated
-# to produce non-empty answer sets for the canonical 1970-2025 build.
-_TRIVIA_TEMPLATES: list[dict] = [
-    {"rank_by": "rush_yds",  "n": 10, "position": "RB"},
-    {"rank_by": "rush_td",   "n": 10, "position": "RB"},
-    {"rank_by": "pass_yds",  "n": 10, "position": "QB"},
-    {"rank_by": "pass_td",   "n": 10, "position": "QB"},
-    {"rank_by": "rec_yds",   "n": 10, "position": "WR"},
-    {"rank_by": "rec",       "n": 10, "position": "WR"},
-    {"rank_by": "rec_td",    "n": 10, "position": "TE"},
-    {"rank_by": "fpts_ppr",  "n": 10, "position": "ALL"},
-    {"rank_by": "fpts_ppr",  "n": 10, "position": "FLEX"},
-    {"rank_by": "def_sacks", "n": 10, "position": "ALL", "start": 1982},
-    {"rank_by": "def_int",   "n": 10, "position": "ALL"},
-    {"rank_by": "fg_made",   "n": 10, "position": "K"},
-    {"rank_by": "rush_yds",  "n": 10, "position": "RB",
-     "has_award": ["MVP"]},
-    {"rank_by": "pass_yds",  "n": 10, "position": "QB",
-     "has_award": ["MVP"]},
-    {"rank_by": "rush_yds",  "n": 10, "position": "RB",
-     "rookie_only": True},
-    {"rank_by": "rec_yds",   "n": 10, "position": "WR",
-     "rookie_only": True},
-    {"rank_by": "pass_yds",  "n": 10, "position": "QB",
-     "rookie_only": True},
+# Vocabularies the random generator samples from. Curated to produce
+# non-empty answer sets on the canonical 1970-2025 build, and to skip
+# combinations that don't exist (e.g. no point ranking by `def_sacks`
+# before 1982 since that's when sacks became an official stat).
+_RANDOM_RANK_BY: list[str] = [
+    "rush_yds", "rush_td", "rush_att",
+    "pass_yds", "pass_td", "pass_cmp", "pass_rating",
+    "rec_yds", "rec", "rec_td", "targets",
+    "fpts_ppr", "fpts_half", "fpts_std",
+    "def_sacks", "def_int", "def_int_td",
+    "def_tackles_combined", "def_pass_def",
+    "fg_made", "fg_long",
+    "kr_yds", "pr_yds",
 ]
+# Stats with restricted era support — random picks for these add a
+# matching --start so we don't return empty answer sets.
+_STAT_MIN_SEASON: dict[str, int] = {
+    "def_sacks":            1982,
+    "def_tackles_combined": 1994,
+    "def_tackles_solo":     1994,
+    "def_tackles_assist":   1994,
+    "targets":              1992,
+}
+_RANDOM_POSITIONS: list[str] = [
+    "ALL", "ALL", "ALL", "ALL",  # weight ALL highest — broadest sets
+    "QB", "RB", "WR", "TE", "FLEX", "K",
+]
+_RANDOM_TEAMS: list[str] = [
+    "DAL", "PIT", "GB", "SF", "KAN", "NE", "DEN", "PHI",
+    "NYG", "CHI", "MIN", "CLE", "BAL", "BUF", "MIA", "TEN",
+    "IND", "JAX", "HOU", "CIN", "ATL", "CAR", "NO", "TB",
+    "DET", "ARI", "LAR", "SEA", "WAS", "NYJ", "LAC", "LV",
+]
+_RANDOM_DIVISIONS: list[str] = [
+    "AFC East", "AFC North", "AFC South", "AFC West",
+    "NFC East", "NFC North", "NFC South", "NFC West",
+    "NFC Central",  # historical (pre-2002)
+]
+_RANDOM_CONFERENCES: list[str] = ["AFC", "NFC"]
+_RANDOM_AWARDS: list[str] = [
+    "MVP", "OPOY", "DPOY", "OROY", "DROY", "CPOY",
+    "PB", "AP_FIRST",
+]
+_RANDOM_N_CHOICES: list[int] = [5, 5, 10, 10, 10, 15]
 
 
-def _run_template_trivia(template: dict, *, db: Path, label: str) -> None:
-    """Resolve a trivia template into an answer set and run the REPL."""
+def _random_trivia_template(rng) -> dict:
+    """Build a fresh template by sampling each filter dimension.
+
+    Picks at most one of {team, division, conference} so geo filters
+    don't compound into empty sets, and at most one award filter
+    (has_award OR ever_won). Year range, rookie_only, and uniqueness
+    are independent randomized toggles.
+    """
+    rank_by = rng.choice(_RANDOM_RANK_BY)
+    spec: dict = {
+        "rank_by":  rank_by,
+        "n":        rng.choice(_RANDOM_N_CHOICES),
+        "position": rng.choice(_RANDOM_POSITIONS),
+        "unique":   rng.choice([True, True, False]),  # 2/3 unique
+    }
+
+    # Year range with prob ~0.45 — start ≤ end always enforced.
+    min_floor = _STAT_MIN_SEASON.get(rank_by, 1970)
+    if rng.random() < 0.45:
+        start = rng.randint(min_floor, 2018)
+        end   = rng.randint(start, 2024)
+        spec["start"] = start
+        spec["end"]   = end
+    else:
+        # Always respect era floors even when no random year range —
+        # ranking by def_sacks before 1982 returns nothing useful.
+        if min_floor > 1970:
+            spec["start"] = min_floor
+
+    # Geo: at most one of team / division / conference.
+    geo = rng.random()
+    if geo < 0.10:
+        spec["team"] = rng.choice(_RANDOM_TEAMS)
+    elif geo < 0.20:
+        spec["division"] = rng.choice(_RANDOM_DIVISIONS)
+    elif geo < 0.30:
+        spec["conference"] = rng.choice(_RANDOM_CONFERENCES)
+
+    # Award filter: at most one of has_award / ever_won_award.
+    aw = rng.random()
+    if aw < 0.10:
+        spec["has_award"] = [rng.choice(_RANDOM_AWARDS)]
+    elif aw < 0.25:
+        spec["ever_won_award"] = [rng.choice(_RANDOM_AWARDS)]
+
+    if rng.random() < 0.10:
+        spec["rookie_only"] = True
+
+    return spec
+
+
+def _resolve_template(con: duckdb.DuckDBPyConnection, template: dict):
+    """Run pos_topN for a template, return (answers, n, rank_by, position).
+
+    Returns ``answers=None`` if the SQL call itself raises (rare —
+    happens if a template asks for an impossible combination like
+    rookie_only + a draft round filter that excludes everyone)."""
     args = dict(template)
     rank_by = args.pop("rank_by")
     n = args.pop("n")
     position = args.pop("position", "ALL")
-    sql, params = pos_topN(position, n=n, rank_by=rank_by, **args)
-
-    con = _open_db(db)
     try:
+        sql, params = pos_topN(position, n=n, rank_by=rank_by, **args)
         cur = con.execute(sql, params)
         cols = [d[0] for d in cur.description]
         answers = [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        con.close()
+    except Exception:
+        return None, n, rank_by, position
+    return answers, n, rank_by, position
 
-    if not answers:
-        typer.echo("No matching player-seasons for this template.")
-        raise typer.Exit(code=0)
+
+def _pick_non_empty_template(
+    con: duckdb.DuckDBPyConnection, rng, *, max_attempts: int = 12
+) -> tuple[dict, list[dict], int, str, str]:
+    """Sample random templates until one yields a non-empty answer
+    set, up to ``max_attempts``. Falls back to a known-good
+    minimum-filter template if every attempt returned empty."""
+    last = None
+    for _ in range(max_attempts):
+        template = _random_trivia_template(rng)
+        answers, n, rank_by, position = _resolve_template(con, template)
+        if answers:
+            return template, answers, n, rank_by, position
+        last = (template, answers, n, rank_by, position)
+    # Fallback: rank by fpts_ppr across all positions, no other filters.
+    fallback = {"rank_by": "fpts_ppr", "n": 10, "position": "ALL", "unique": True}
+    answers, n, rank_by, position = _resolve_template(con, fallback)
+    return fallback, answers or [], n, rank_by, position
+
+
+def _run_template(
+    template: dict, answers: list[dict],
+    n: int, rank_by: str, position: str, *, label: str,
+) -> None:
+    """Common end-of-pipeline: print label, build title from the
+    resolved template args, run the REPL."""
+    args = dict(template)
+    args.pop("rank_by", None)
+    args.pop("n", None)
+    args.pop("position", None)
 
     title = _build_trivia_title(
         n=n, rank_by=rank_by, position=position,
@@ -1173,15 +1399,25 @@ def trivia_daily(
     """Same trivia game for everyone today (deterministic by date).
 
     Uses today's date as the RNG seed, so every player sees the same
-    template until midnight local time.
+    randomly-generated template until midnight local time.
     """
     import datetime
     import random
 
     seed = int(datetime.date.today().isoformat().replace("-", ""))
     rng = random.Random(seed)
-    template = rng.choice(_TRIVIA_TEMPLATES)
-    _run_template_trivia(template, db=db, label=f"daily for {datetime.date.today()}")
+    con = _open_db(db)
+    try:
+        template, answers, n, rank_by, position = _pick_non_empty_template(con, rng)
+    finally:
+        con.close()
+    if not answers:
+        typer.echo("No matching player-seasons for today's template.")
+        raise typer.Exit(code=0)
+    _run_template(
+        template, answers, n, rank_by, position,
+        label=f"daily for {datetime.date.today()}",
+    )
 
 
 @trivia_app.command("random")
@@ -1189,18 +1425,29 @@ def trivia_random(
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
     seed: int | None = typer.Option(
         None, "--seed",
-        help="Optional RNG seed for reproducibility (e.g. tests).",
+        help="Optional RNG seed for reproducibility (e.g. tests, "
+             "sharing a specific generated game).",
     ),
 ) -> None:
-    """Random trivia template — different every call.
+    """Random trivia — fresh sampled template every call.
 
-    Pass --seed N to reproduce a specific game (handy for sharing).
+    Samples rank_by, position, year range, optional team/division/
+    conference, optional award filter, rookie-only, and uniqueness
+    independently. Retries up to 12 times to find a non-empty answer
+    set; falls back to top-N by fpts_ppr if everything came up empty.
     """
     import random
 
     rng = random.Random(seed)
-    template = rng.choice(_TRIVIA_TEMPLATES)
-    _run_template_trivia(template, db=db, label="random")
+    con = _open_db(db)
+    try:
+        template, answers, n, rank_by, position = _pick_non_empty_template(con, rng)
+    finally:
+        con.close()
+    if not answers:
+        typer.echo("No matching player-seasons for any random template.")
+        raise typer.Exit(code=0)
+    _run_template(template, answers, n, rank_by, position, label="random")
 
 
 if __name__ == "__main__":

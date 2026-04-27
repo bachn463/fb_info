@@ -26,13 +26,27 @@ def db():
 
 # ---- career_topN ----
 
-def test_career_topN_returns_career_total_column(db):
+def test_career_topN_returns_expected_columns(db):
     sql, params = career_topN("rush_yds", n=5)
     cur = db.execute(sql, params)
     cols = [d[0] for d in cur.description]
-    assert cols == ["name", "career_total", "seasons", "first_season", "last_season"]
+    assert cols == [
+        "name", "positions", "teams",
+        "career_total", "seasons", "first_season", "last_season",
+    ]
     rows = cur.fetchall()
     assert len(rows) > 0
+
+
+def test_career_topN_positions_and_teams_populated(db):
+    """The aggregated `positions` and `teams` columns should be
+    non-empty for typical players in the fixture set."""
+    sql, params = career_topN("rush_yds", n=5)
+    rows = db.execute(sql, params).fetchall()
+    # rows: (name, positions, teams, career_total, seasons, first, last)
+    for name, positions, teams, total, *_ in rows:
+        assert positions, f"empty positions for {name}"
+        assert teams, f"empty teams for {name}"
 
 
 def test_career_topN_position_filter_qb(db):
@@ -43,8 +57,10 @@ def test_career_topN_position_filter_qb(db):
     sql, params = career_topN("pass_yds", n=5, position="QB")
     rows = db.execute(sql, params).fetchall()
     assert len(rows) > 0
-    for name, career_total, *_ in rows:
+    # rows: (name, positions, teams, career_total, ...)
+    for name, positions, teams, career_total, *_ in rows:
         assert career_total is not None and career_total > 0
+        assert "QB" in (positions or "")
     # Known non-QBs from our fixture set should never appear.
     names = {r[0] for r in rows}
     assert "Walter Payton" not in names
@@ -77,12 +93,32 @@ def test_career_topN_ever_won_filter(db):
 
 # ---- awards_list ----
 
+def test_awards_list_returns_expected_columns(db):
+    sql, params = awards_list(award_type="MVP")
+    cur = db.execute(sql, params)
+    cols = [d[0] for d in cur.description]
+    assert cols == [
+        "season", "award_type", "name", "position", "team", "vote_finish",
+    ]
+
+
 def test_awards_list_filters_by_award_type(db):
     sql, params = awards_list(award_type="MVP")
     rows = db.execute(sql, params).fetchall()
     # Should include the 2023 MVP.
     names = {r[2] for r in rows}
     assert "Lamar Jackson" in names
+
+
+def test_awards_list_position_and_team_populated(db):
+    """Award rows for players who have a stats row that season should
+    have non-empty position + team. Lamar Jackson 2023 MVP is QB BAL."""
+    sql, params = awards_list(award_type="MVP", season=2023)
+    rows = db.execute(sql, params).fetchall()
+    # rows: (season, award_type, name, position, team, vote_finish)
+    lamar = next(r for r in rows if r[2] == "Lamar Jackson")
+    assert lamar[3] == "QB"
+    assert lamar[4] == "BAL"
 
 
 def test_awards_list_filters_by_season(db):
@@ -96,7 +132,7 @@ def test_awards_list_winners_only_excludes_finalists(db):
     """winners_only=True should filter out vote_finish > 1."""
     sql, params = awards_list(award_type="MVP", winners_only=True)
     rows = db.execute(sql, params).fetchall()
-    for season, award_type, name, vote_finish in rows:
+    for season, award_type, name, position, team, vote_finish in rows:
         assert vote_finish == 1
 
 
@@ -104,7 +140,7 @@ def test_awards_list_include_finalists(db):
     """winners_only=False keeps the placings."""
     sql, params = awards_list(award_type="MVP", winners_only=False)
     rows = db.execute(sql, params).fetchall()
-    finishes = {r[3] for r in rows}
+    finishes = {r[5] for r in rows}
     # 2023 MVP voting had multiple finishers; expect more than just 1.
     assert len(finishes) > 1
 

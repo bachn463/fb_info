@@ -586,12 +586,25 @@ def career_topN(
         having_sql = "HAVING COUNT(DISTINCT s.season) >= ?"
         params.append(min_seasons)
 
+    # ``positions`` is the slash-joined set of positions the player
+    # held across the qualifying seasons (alpha-sorted for stable
+    # output). ``teams`` is the comma-joined set ordered by the
+    # *first* season the player appeared with that team — the natural
+    # career chronology rather than alphabetical.
     sql = f"""
-        SELECT p.name                    AS name,
-               SUM(s.{rank_by})          AS career_total,
-               COUNT(DISTINCT s.season)  AS seasons,
-               MIN(s.season)             AS first_season,
-               MAX(s.season)             AS last_season
+        SELECT p.name                                                  AS name,
+               STRING_AGG(DISTINCT s.position, '/' ORDER BY s.position) AS positions,
+               (SELECT STRING_AGG(team, ',' ORDER BY first_season)
+                FROM (
+                    SELECT s2.team, MIN(s2.season) AS first_season
+                    FROM   player_season_stats s2
+                    WHERE  s2.player_id = p.player_id
+                    GROUP BY s2.team
+                ))                                                     AS teams,
+               SUM(s.{rank_by})                                        AS career_total,
+               COUNT(DISTINCT s.season)                                AS seasons,
+               MIN(s.season)                                           AS first_season,
+               MAX(s.season)                                           AS last_season
         FROM   player_season_stats s
         JOIN   players p USING (player_id)
         WHERE  {where_sql}
@@ -630,19 +643,35 @@ def awards_list(
     where: list[str] = []
     params: list = []
     if award_type is not None:
-        where.append("award_type = ?")
+        where.append("vw.award_type = ?")
         params.append(award_type)
     if season is not None:
-        where.append("season = ?")
+        where.append("vw.season = ?")
         params.append(season)
     if winners_only:
-        where.append("(vote_finish = 1 OR vote_finish IS NULL)")
+        where.append("(vw.vote_finish = 1 OR vw.vote_finish IS NULL)")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    # Position and team for each award row are derived per (player_id,
+    # season) from player_season_stats. Players with no stats row
+    # for that season (linemen, specialists who don't appear on the
+    # six parsed pages) get NULL — STRING_AGG on an empty subquery
+    # returns NULL, displayed as empty.
     sql = f"""
-        SELECT season, award_type, name, vote_finish
-        FROM   v_award_winners
+        SELECT vw.season,
+               vw.award_type,
+               vw.name,
+               (SELECT STRING_AGG(DISTINCT s.position, '/' ORDER BY s.position)
+                FROM   player_season_stats s
+                WHERE  s.player_id = vw.player_id
+                  AND  s.season    = vw.season)             AS position,
+               (SELECT STRING_AGG(s.team, '/' ORDER BY s.team)
+                FROM   player_season_stats s
+                WHERE  s.player_id = vw.player_id
+                  AND  s.season    = vw.season)             AS team,
+               vw.vote_finish
+        FROM   v_award_winners vw
         {where_sql}
-        ORDER BY season DESC, award_type ASC,
-                 COALESCE(vote_finish, 1) ASC, name ASC
+        ORDER BY vw.season DESC, vw.award_type ASC,
+                 COALESCE(vw.vote_finish, 1) ASC, vw.name ASC
     """
     return sql, params
