@@ -550,9 +550,13 @@ def _run_trivia_loop(answers: list[dict], *, rank_by: str) -> None:
             continue
         cmd = guess.lower()
         if cmd == "quit":
+            _print_final_ranked_list(answers, found, rank_by=rank_by)
+            typer.echo(
+                f"\nFinal score: {len(found)} / {n} in {guesses} guesses."
+            )
             return
         if cmd == "give up":
-            _reveal_remaining(answers, found, rank_by=rank_by)
+            _print_final_ranked_list(answers, found, rank_by=rank_by)
             typer.echo(
                 f"\nFinal score: {len(found)} / {n} in {guesses} guesses."
             )
@@ -580,9 +584,16 @@ def _run_trivia_loop(answers: list[dict], *, rank_by: str) -> None:
                 f"({row['team']}, {rank_by}={_fmt_cell(row['rank_value'])})."
             )
 
+    # Loop exited (either all found, or stdin closed). Print the full
+    # ranked list either way so the user always leaves with the answers.
+    _print_final_ranked_list(answers, found, rank_by=rank_by)
     if len(found) == n:
         typer.echo(
             f"\nAll {n} found in {guesses} guesses. Nice."
+        )
+    else:
+        typer.echo(
+            f"\nFinal score: {len(found)} / {n} in {guesses} guesses."
         )
 
 
@@ -618,19 +629,21 @@ def _print_hint(answers: list[dict], found: set[int], cursor: int) -> int:
     return cursor + 1
 
 
-def _reveal_remaining(
+def _print_final_ranked_list(
     answers: list[dict], found: set[int], *, rank_by: str
 ) -> None:
-    """Print rank/name/team/season/stat for each unfound answer."""
-    unfound = [i for i in range(len(answers)) if i not in found]
-    if not unfound:
+    """Print the full ranked answer list with a marker per row showing
+    whether the user found it (✓) or not (✗). Called on every trivia
+    exit path so the user always leaves with the answers."""
+    if not answers:
         return
-    typer.echo("\nRemaining:")
-    for i in unfound:
-        row = answers[i]
+    typer.echo("\nFinal ranked list:")
+    for i, row in enumerate(answers):
+        marker = "✓" if i in found else "✗"
         rank = i + 1
         typer.echo(
-            f"  #{rank}: {row['name']} ({row['team']} {row['season']}, "
+            f"  {marker} #{rank}: {row['name']} "
+            f"({row['team']} {row['season']}, "
             f"{rank_by}={_fmt_cell(row['rank_value'])})"
         )
 

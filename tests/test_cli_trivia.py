@@ -65,7 +65,7 @@ def test_trivia_wrong_guess_prints_not_in_top(tmp_path):
     assert "Not in the top 3" in result.output
 
 
-def test_trivia_give_up_reveals_remainder(tmp_path):
+def test_trivia_give_up_prints_full_ranked_list(tmp_path):
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
     result = runner.invoke(
@@ -81,13 +81,15 @@ def test_trivia_give_up_reveals_remainder(tmp_path):
         input="give up\n",
     )
     assert result.exit_code == 0, result.output
-    assert "Remaining:" in result.output
+    assert "Final ranked list:" in result.output
     # Marcus Allen led the league in 1985 with 1759 rush yds.
     assert "Marcus Allen" in result.output
     assert "Final score:" in result.output
 
 
-def test_trivia_quit_exits_silently(tmp_path):
+def test_trivia_quit_also_prints_full_ranked_list(tmp_path):
+    """Even when quitting without guessing, the full ranked list
+    is printed so the user always leaves with the answers."""
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
     result = runner.invoke(
@@ -103,8 +105,60 @@ def test_trivia_quit_exits_silently(tmp_path):
         input="quit\n",
     )
     assert result.exit_code == 0, result.output
-    assert "Final score:" not in result.output
-    assert "Remaining:" not in result.output
+    assert "Final ranked list:" in result.output
+    assert "Marcus Allen" in result.output
+    assert "Final score: 0 / 3" in result.output
+
+
+def test_trivia_full_finish_prints_full_ranked_list(tmp_path):
+    """Same on a successful all-correct completion — list at end so
+    the user can see all the answers and confirm."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "trivia", "play",
+            "--rank-by", "rush_yds",
+            "--n", "3",
+            "--position", "RB",
+            "--start", "1985", "--end", "1985",
+            "--db", str(db),
+        ],
+        input="marcus allen\ngerald riggs\nwalter payton\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "All 3 found" in result.output
+    assert "Final ranked list:" in result.output
+    # All three names listed with the ✓ marker.
+    assert "✓" in result.output
+    assert "Marcus Allen" in result.output
+    assert "Gerald Riggs" in result.output
+    assert "Walter Payton" in result.output
+
+
+def test_trivia_partial_score_marks_unfound_with_x(tmp_path):
+    """Player you didn't guess shows the ✗ marker in the final list."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "trivia", "play",
+            "--rank-by", "rush_yds",
+            "--n", "3",
+            "--position", "RB",
+            "--start", "1985", "--end", "1985",
+            "--db", str(db),
+        ],
+        input="marcus allen\ngive up\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Final ranked list:" in result.output
+    # Found marker (Marcus Allen) and missed marker (others).
+    assert "✓" in result.output
+    assert "✗" in result.output
+    assert "Final score: 1 / 3" in result.output
 
 
 def test_trivia_hint_prints_clue(tmp_path):
