@@ -85,6 +85,42 @@ def test_real_tagovailoa_2023_string():
     ]
 
 
+def test_pfr_actual_droy_lowercase_o_form():
+    """PFR uses 'AP DRoY-N' (lowercase 'o'), not 'AP DROY-N'.
+    Regression: the previous strict regex silently dropped these
+    rows. The user reported that --has-award DROY / --ever-won DROY
+    queries returned nothing despite the data being present in
+    fixtures."""
+    assert parse_awards_string("AP DRoY-1") == [
+        {"award_type": "DROY", "vote_finish": 1},
+    ]
+    assert parse_awards_string("AP DRoY-10") == [
+        {"award_type": "DROY", "vote_finish": 10},
+    ]
+
+
+def test_pfr_actual_oroy_lowercase_o_form():
+    """Same as DRoY: PFR's offensive-rookie label is 'AP ORoY-N',
+    parser must accept it."""
+    assert parse_awards_string("AP ORoY-1") == [
+        {"award_type": "OROY", "vote_finish": 1},
+    ]
+
+
+def test_case_insensitive_ap_label_matching():
+    """Defensive: any case variation of the AP label should yield
+    the same canonical award_type so PFR formatting changes don't
+    silently regress us again."""
+    for token in ["AP MVP-1", "AP mvp-1", "AP Mvp-1"]:
+        assert parse_awards_string(token) == [
+            {"award_type": "MVP", "vote_finish": 1}
+        ]
+    for token in ["AP DROY-1", "AP DRoY-1", "AP droy-1"]:
+        assert parse_awards_string(token) == [
+            {"award_type": "DROY", "vote_finish": 1}
+        ]
+
+
 def test_unknown_token_silently_skipped():
     """Unknown tokens are dropped, not raised — keeps the parser
     tolerant to new PFR strings we haven't catalogued."""

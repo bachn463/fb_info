@@ -19,26 +19,37 @@ from __future__ import annotations
 
 import re
 
-# AP voted awards: ``AP <token>-<finish>`` -> our award_type.
-_AP_VOTED_AWARDS: dict[str, str] = {
-    "MVP":  "MVP",
-    "OPoY": "OPOY",
-    "DPoY": "DPOY",
-    "OROY": "OROY",
-    "DROY": "DROY",
-    "CPoY": "CPOY",
+# AP voted awards: lowercase label -> our canonical award_type. Match
+# is case-insensitive because PFR's actual format mixes cases:
+#   "AP MVP-1"   (all caps)
+#   "AP OPoY-1"  ("o" lowercase between caps)
+#   "AP DRoY-1"  ("o" lowercase) — *not* "DROY"
+#   "AP ORoY-1"  ("o" lowercase) — *not* "OROY"
+# The previous strict regex silently dropped DRoY/ORoY rows. Now we
+# match `[A-Za-z]+` and look up the lowercased label, so any case
+# variant (OROY / OROY / ORoY / oroy) lands on the same canonical
+# award_type.
+_AP_VOTED_LABELS: dict[str, str] = {
+    "mvp":  "MVP",
+    "opoy": "OPOY",
+    "dpoy": "DPOY",
+    "oroy": "OROY",
+    "droy": "DROY",
+    "cpoy": "CPOY",
 }
 
-# Binary tokens (no vote_finish).
+# Binary tokens (no vote_finish). Matched case-insensitively at the
+# call site.
 _BINARY_TOKENS: dict[str, str] = {
-    "PB":     "PB",
-    "AP-1":   "AP_FIRST",
-    "AP-2":   "AP_SECOND",
-    "WPMOY":  "WPMOY",
+    "pb":     "PB",
+    "ap-1":   "AP_FIRST",
+    "ap-2":   "AP_SECOND",
+    "wpmoy":  "WPMOY",
 }
 
 # Match e.g. "AP MVP-1", "AP CPoY-5". Groups: token, finish.
-_AP_VOTED_RE = re.compile(r"^AP\s+(MVP|OPoY|DPoY|OROY|DROY|CPoY)-(\d+)$")
+# Case-insensitive label so PFR's mixed-case forms all parse.
+_AP_VOTED_RE = re.compile(r"^AP\s+([A-Za-z]+)-(\d+)$")
 
 
 def parse_awards_string(raw: str | None) -> list[dict]:
@@ -58,18 +69,21 @@ def parse_awards_string(raw: str | None) -> list[dict]:
         token = token.strip()
         if not token:
             continue
-        if token in _BINARY_TOKENS:
-            out.append({"award_type": _BINARY_TOKENS[token], "vote_finish": None})
+        lower = token.lower()
+        if lower in _BINARY_TOKENS:
+            out.append({"award_type": _BINARY_TOKENS[lower], "vote_finish": None})
             continue
         m = _AP_VOTED_RE.match(token)
         if m:
-            ap_label, finish = m.group(1), int(m.group(2))
-            out.append(
-                {
-                    "award_type": _AP_VOTED_AWARDS[ap_label],
-                    "vote_finish": finish,
-                }
-            )
+            label = m.group(1).lower()
+            finish = int(m.group(2))
+            if label in _AP_VOTED_LABELS:
+                out.append(
+                    {
+                        "award_type": _AP_VOTED_LABELS[label],
+                        "vote_finish": finish,
+                    }
+                )
             continue
         # Unknown token — silently skipped.
     return out
