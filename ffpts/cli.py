@@ -2,8 +2,11 @@
 
 Three commands:
 
-- ``ffpts build --start YEAR --end YEAR`` runs the nflverse->DuckDB
+- ``ffpts build --start YEAR --end YEAR`` runs the PFR->DuckDB
   pipeline for the given seasons (default DB at data/ff.duckdb).
+  Requires ``data/pfr_session.json`` set up with a browser-cookie
+  session — see README "Pre-1999 PFR backfill" (now applies to all
+  years, not just pre-1999).
 - ``ffpts query "<SQL>"`` runs a raw SQL statement against the DB and
   prints the result as a tabulated table.
 - ``ffpts ask <name> [opts...]`` runs a named helper from
@@ -74,7 +77,14 @@ def cmd_build(
     end: int = typer.Option(..., "--end", help="Last season (inclusive)."),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the DuckDB file."),
 ) -> None:
-    """Pull seasons [start..end] from nflverse and load into the DB."""
+    """Pull seasons [start..end] from PFR and load into the DB.
+
+    Reads data/pfr_session.json for the browser-cookie session that
+    gets us past Cloudflare. ~9 PFR pages per season (passing,
+    rushing, receiving, defense, kicking, returns, draft, standings)
+    at the polite 5s throttle ≈ 45s per uncached year. Cached
+    forever after.
+    """
     if start > end:
         typer.echo(f"--start ({start}) must be <= --end ({end})", err=True)
         raise typer.Exit(code=2)

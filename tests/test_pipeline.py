@@ -1,631 +1,228 @@
-"""End-to-end pipeline test: synthetic nflverse rows -> DuckDB.
+"""End-to-end pipeline test against the committed 1985 PFR fixtures.
 
-Uses injected loaders so no network is touched. Asserts row counts,
-key joins, and the two motivating queries land sensible answers.
+Uses the fixture-backed scraper from test_ingest_pfr (no network).
+Verifies the full pipeline: era table -> draft picks -> standings W/L
+-> player_season_stats -> supplemental drafts -> the motivating
+queries.
 """
 
 from __future__ import annotations
 
-import polars as pl
 import pytest
 
 from ffpts.db import apply_schema, connect
 from ffpts.pipeline import build
 
 
-# Two players + two seasons of stats + matching draft + nothing else.
-# The fixtures are intentionally tiny but cover the table joins.
-
-CMC_2017 = {
-    "player_id": "00-0033280",
-    "player_display_name": "Christian McCaffrey",
-    "position": "RB",
-    "season": 2017, "recent_team": "CAR", "games": 16,
-    "completions": 0, "attempts": 0, "passing_yards": 0, "passing_tds": 0,
-    "passing_interceptions": 0, "sacks_suffered": 0, "sack_yards_lost": 0,
-    "passing_2pt_conversions": 0,
-    "carries": 117, "rushing_yards": 435, "rushing_tds": 2,
-    "rushing_2pt_conversions": 0,
-    "targets": 113, "receptions": 80, "receiving_yards": 651,
-    "receiving_tds": 5, "receiving_2pt_conversions": 0,
-    "sack_fumbles": 0, "sack_fumbles_lost": 0,
-    "rushing_fumbles": 1, "rushing_fumbles_lost": 0,
-    "receiving_fumbles": 0, "receiving_fumbles_lost": 0,
-    "def_tackles_solo": 0, "def_tackle_assists": 0, "def_sacks": 0.0,
-    "def_interceptions": 0, "def_interception_yards": 0,
-    "def_pass_defended": 0, "def_fumbles_forced": 0, "def_safeties": 0,
-    "fumble_recovery_opp": 0, "fumble_recovery_yards_opp": 0,
-    "fg_made": 0, "fg_att": 0, "fg_long": 0,
-    "pat_made": 0, "pat_att": 0,
-    "punt_returns": 0, "punt_return_yards": 0,
-    "kickoff_returns": 0, "kickoff_return_yards": 0,
-}
-
-URLACHER_2002 = {
-    # Brian Urlacher 2002, NFC Central -> NFC North in the 2002 realignment.
-    # Note: 2002 *is* the first year of the new alignment, so CHI shows
-    # division="NFC North" in the team_seasons table.
-    "player_id": "00-0019596",
-    "player_display_name": "Brian Urlacher",
-    "position": "MLB",
-    "season": 2002, "recent_team": "CHI", "games": 16,
-    "completions": 0, "attempts": 0, "passing_yards": 0, "passing_tds": 0,
-    "passing_interceptions": 0, "sacks_suffered": 0, "sack_yards_lost": 0,
-    "passing_2pt_conversions": 0,
-    "carries": 0, "rushing_yards": 0, "rushing_tds": 0,
-    "rushing_2pt_conversions": 0,
-    "targets": 0, "receptions": 0, "receiving_yards": 0, "receiving_tds": 0,
-    "receiving_2pt_conversions": 0,
-    "sack_fumbles": 0, "sack_fumbles_lost": 0,
-    "rushing_fumbles": 0, "rushing_fumbles_lost": 0,
-    "receiving_fumbles": 0, "receiving_fumbles_lost": 0,
-    "def_tackles_solo": 151, "def_tackle_assists": 63, "def_sacks": 4.5,
-    "def_interceptions": 1, "def_interception_yards": 13,
-    "def_pass_defended": 11, "def_fumbles_forced": 1, "def_safeties": 0,
-    "fumble_recovery_opp": 1, "fumble_recovery_yards_opp": 0,
-    "fg_made": 0, "fg_att": 0, "fg_long": 0,
-    "pat_made": 0, "pat_att": 0,
-    "punt_returns": 0, "punt_return_yards": 0,
-    "kickoff_returns": 0, "kickoff_return_yards": 0,
-}
-
-
-def fake_player_stats_loader(seasons):
-    seasons = list(seasons)
-    bag = []
-    if 2017 in seasons:
-        bag.append(CMC_2017)
-    if 2002 in seasons:
-        bag.append(URLACHER_2002)
-    if not bag:
-        # Empty rows of the right shape so transform_player_seasons works.
-        bag = [{**CMC_2017, "season": seasons[0], "player_id": "__empty__"}]
-    return pl.DataFrame(bag)
-
-
-def fake_draft_loader():
-    return pl.DataFrame(
-        [
-            {
-                "season": 2017, "round": 1, "pick": 8, "team": "CAR",
-                "gsis_id": "00-0033280", "pfr_player_id": "McCaCh01",
-                "pfr_player_name": "Christian McCaffrey", "position": "RB",
-            },
-            {
-                "season": 2000, "round": 1, "pick": 9, "team": "CHI",
-                "gsis_id": "00-0019596", "pfr_player_id": "UrlaBr00",
-                "pfr_player_name": "Brian Urlacher", "position": "MLB",
-            },
-        ]
-    )
+def _scraper():
+    """Fresh fixture-backed scraper for each build() invocation."""
+    from tests.test_ingest_pfr import _FixtureScraper
+    return _FixtureScraper()
 
 
 @pytest.fixture
 def populated_db():
     con = connect(None)
     apply_schema(con)
-    summary = build(
-        seasons=[2002, 2017],
-        con=con,
-        player_loader=fake_player_stats_loader,
-        draft_loader=fake_draft_loader,
-    )
+    summary = build(seasons=[1985], con=con, pfr_scraper=_scraper())
     yield con, summary
     con.close()
 
 
+# --- Summary + counts ----------------------------------------------------
+
+
 def test_build_returns_summary_with_expected_counts(populated_db):
     _, summary = populated_db
-    assert summary["seasons"] == [2002, 2017]
-    # 2002 -> 32 teams; 2017 -> 32 teams.
-    assert summary["team_seasons_rows"] == 64
-    # Two draft picks, both with valid gsis_id.
-    assert summary["draft_picks_rows"] == 2
-    assert summary["player_season_stats_rows"] == {2002: 1, 2017: 1}
+    assert summary["seasons"] == [1985]
+    # 1985 = 28 teams (pre-1995 expansion).
+    assert summary["team_seasons_rows"] == 28
+    # 1985 draft fixture has ~240 picks with player slugs.
+    assert summary["draft_picks_rows"] > 200
+    # 1985 PFR data merges to >800 player-season rows.
+    assert summary["player_season_stats_rows"][1985] > 800
 
 
-def test_players_table_has_first_and_last_season_widened(populated_db):
+def test_player_id_namespace_uniformly_pfr(populated_db):
+    """The full-PFR pivot means every players row uses pfr:<slug>."""
     con, _ = populated_db
-    cmc = con.execute(
-        "SELECT name, first_season, last_season FROM players WHERE player_id = '00-0033280'"
-    ).fetchone()
-    assert cmc[0] == "Christian McCaffrey"
-    # CMC drafted 2017, played 2017 → both first_season and last_season = 2017.
-    assert cmc[1] == 2017
-    assert cmc[2] == 2017
-    # Urlacher drafted 2000, played 2002 → first_season widens to 2000.
-    bu = con.execute(
-        "SELECT first_season, last_season FROM players WHERE player_id = '00-0019596'"
-    ).fetchone()
-    assert bu[0] == 2000
-    assert bu[1] == 2002
+    non_pfr = con.execute(
+        "SELECT COUNT(*) FROM players WHERE player_id NOT LIKE 'pfr:%'"
+    ).fetchone()[0]
+    assert non_pfr == 0
 
 
-def test_v_player_season_full_joins_division_and_draft(populated_db):
+# --- Real player-seasons ------------------------------------------------
+
+
+def test_walter_payton_1985_in_v_player_season_full(populated_db):
     con, _ = populated_db
-    rows = con.execute(
+    row = con.execute(
         """
-        SELECT name, season, team, position, division, conference,
-               draft_round, draft_overall_pick
-        FROM v_player_season_full
-        ORDER BY season, name
-        """
-    ).fetchall()
-    # 2 rows: Urlacher 2002 + CMC 2017.
-    assert len(rows) == 2
-    urlacher = rows[0]
-    cmc = rows[1]
-    assert urlacher == ("Brian Urlacher", 2002, "CHI", "MLB", "NFC North", "NFC", 1, 9)
-    assert cmc == ("Christian McCaffrey", 2017, "CAR", "RB", "NFC South", "NFC", 1, 8)
-
-
-def test_v_flex_seasons_includes_cmc_excludes_urlacher(populated_db):
-    con, _ = populated_db
-    rows = con.execute(
-        "SELECT name FROM v_flex_seasons ORDER BY name"
-    ).fetchall()
-    assert rows == [("Christian McCaffrey",)]
-
-
-def test_pipeline_is_idempotent(populated_db):
-    """Re-running build for the same seasons replaces rows, no PK conflict."""
-    con, _ = populated_db
-    summary2 = build(
-        seasons=[2002, 2017],
-        con=con,
-        player_loader=fake_player_stats_loader,
-        draft_loader=fake_draft_loader,
-    )
-    assert summary2["player_season_stats_rows"] == {2002: 1, 2017: 1}
-    # Still only one row each — DELETE-then-INSERT replaced cleanly.
-    n = con.execute("SELECT COUNT(*) FROM player_season_stats").fetchone()[0]
-    assert n == 2
-
-
-def test_q2_motivating_query_finds_urlacher_in_nfc_north_2002(populated_db):
-    """Q2 in plan: NFC North single-season INTs."""
-    con, _ = populated_db
-    rows = con.execute(
-        """
-        SELECT name, season, team, def_int
+        SELECT name, season, team, position, division, conference, franchise
         FROM   v_player_season_full
-        WHERE  division = 'NFC North'
-          AND  def_int IS NOT NULL
-          AND  def_int > 0
-        ORDER BY def_int DESC
+        WHERE  name = 'Walter Payton' AND season = 1985 AND team = 'CHI'
         """
+    ).fetchone()
+    assert row == (
+        "Walter Payton", 1985, "CHI", "RB",
+        "NFC Central", "NFC", "bears",
+    )
+
+
+def test_v_flex_seasons_includes_walter_payton(populated_db):
+    con, _ = populated_db
+    rows = con.execute(
+        "SELECT name FROM v_flex_seasons "
+        "WHERE name = 'Walter Payton' AND season = 1985"
     ).fetchall()
-    assert rows == [("Brian Urlacher", 2002, "CHI", 1)]
+    assert rows == [("Walter Payton",)]
 
 
-def test_pipeline_tolerates_null_player_display_name():
-    """Regression: nflverse rows with NULL player_display_name (and draft
-    rows with NULL pfr_player_name) used to crash the players upsert
-    because players.name is NOT NULL. The upsert now falls back to the
-    player_id when no name is available anywhere in the source."""
-
-    NAMELESS_2023 = {**CMC_2017,
-        "player_id": "00-9999999",
-        "player_display_name": None,
-        "season": 2023,
-        "recent_team": "SF",
-    }
-
-    def loader_with_null_name(seasons):
-        s = list(seasons)[0]
-        if s == 2023:
-            return pl.DataFrame([NAMELESS_2023])
-        return pl.DataFrame([{**CMC_2017, "season": s}])
-
-    def draft_with_null_name():
-        return pl.DataFrame([
-            {
-                "season": 2017, "round": 1, "pick": 8, "team": "CAR",
-                "gsis_id": "00-0033280", "pfr_player_id": "McCaCh01",
-                "pfr_player_name": "Christian McCaffrey", "position": "RB",
-            },
-            {
-                # Drafted player with NULL pfr_player_name.
-                "season": 2018, "round": 6, "pick": 200, "team": "ATL",
-                "gsis_id": "00-9999998", "pfr_player_id": None,
-                "pfr_player_name": None, "position": "WR",
-            },
-        ])
-
-    con = connect(None)
-    apply_schema(con)
-    try:
-        # No exception = pass.
-        build(seasons=[2023], con=con,
-              player_loader=loader_with_null_name,
-              draft_loader=draft_with_null_name)
-        # Both nameless players ended up with their player_id as the name.
-        rows = dict(con.execute(
-            "SELECT player_id, name FROM players WHERE name = player_id"
-        ).fetchall())
-        assert rows == {
-            "00-9999999": "00-9999999",
-            "00-9999998": "00-9999998",
-        }
-    finally:
-        con.close()
+def test_v_flex_seasons_excludes_qb_marino(populated_db):
+    """QBs are not FLEX."""
+    con, _ = populated_db
+    rows = con.execute(
+        "SELECT COUNT(*) FROM v_flex_seasons WHERE name = 'Dan Marino'"
+    ).fetchone()
+    assert rows == (0,)
 
 
-def test_pipeline_drops_player_season_rows_with_null_team():
-    """Regression: nflverse rows with recent_team=NULL used to crash
-    the player_season_stats insert (team is NOT NULL and part of the
-    PK). They should be silently dropped — they can't be addressed by
-    the (player_id, season, team) PK anyway."""
-
-    valid = {**CMC_2017, "season": 2023, "recent_team": "SF"}
-    null_team = {**CMC_2017,
-        "player_id": "00-9999997",
-        "player_display_name": "Phantom",
-        "season": 2023,
-        "recent_team": None,
-    }
-
-    def loader(seasons):
-        return pl.DataFrame([valid, null_team])
-
-    con = connect(None)
-    apply_schema(con)
-    try:
-        build(seasons=[2023], con=con,
-              player_loader=loader, draft_loader=fake_draft_loader)
-        # The valid row landed; the null-team row was dropped.
-        rows = con.execute(
-            "SELECT player_id FROM player_season_stats ORDER BY player_id"
-        ).fetchall()
-        assert rows == [("00-0033280",)]
-        # The phantom player still exists in `players` (they were upserted
-        # before the team filter), so they're addressable by future joins.
-        phantom = con.execute(
-            "SELECT name FROM players WHERE player_id = '00-9999997'"
-        ).fetchone()
-        assert phantom == ("Phantom",)
-    finally:
-        con.close()
+# --- Q1: FLEX drafted in round 1 (motivating query) ---------------------
 
 
-def test_q1_motivating_query_finds_cmc_round_1(populated_db):
-    """Q1 in plan: FLEX top-N by single-season fpts, drafted in given round.
-
-    Our fixture has only one R1 FLEX (CMC 2017). The query shape returns
-    a player-season row.
-    """
+def test_q1_jerry_rice_1985_round_1_flex(populated_db):
+    """1985 draft R1 P16 SFO → Jerry Rice (WR). 1985 has him as a
+    rookie — he should be the only FLEX (RB/WR/TE) drafted R1 in the
+    fixture year (other 1985 R1 picks were DE/G/DT/etc.)."""
     con, _ = populated_db
     rows = con.execute(
         """
-        SELECT name, team, season, fpts_ppr, draft_round
+        SELECT name, team, season, draft_round
         FROM   v_flex_seasons
         WHERE  draft_round = 1
           AND  fpts_ppr IS NOT NULL
         ORDER BY fpts_ppr DESC
+        """
+    ).fetchall()
+    names = [r[0] for r in rows]
+    assert "Jerry Rice" in names
+
+
+# --- Q2: NFC Central INTs (motivating query, 1985 era) ------------------
+
+
+def test_q2_nfc_central_int_leaders_1985(populated_db):
+    con, _ = populated_db
+    rows = con.execute(
+        """
+        SELECT name, team, season, def_int
+        FROM   v_player_season_full
+        WHERE  division = 'NFC Central'
+          AND  def_int IS NOT NULL
+          AND  def_int > 0
+          AND  season = 1985
+        ORDER BY def_int DESC
         LIMIT 10
         """
     ).fetchall()
-    assert len(rows) == 1
-    assert rows[0][0] == "Christian McCaffrey"
-    assert rows[0][1] == "CAR"
-    assert rows[0][2] == 2017
-    assert rows[0][4] == 1
+    assert len(rows) > 0
+    # Every row is from a 1985 NFC Central team.
+    for name, team, season, def_int in rows:
+        assert season == 1985
+        assert team in {"CHI", "DET", "GNB", "MIN", "TAM"}
+        assert def_int > 0
 
 
-# --- Mixed-source build (PFR pre-1999 + nflverse 1999+) ------------------
+# --- Idempotency --------------------------------------------------------
 
 
-def _fixture_scraper():
-    """A duck-typed scraper that reads from tests/fixtures/."""
-    from tests.test_ingest_pfr import _FixtureScraper
-    return _FixtureScraper()
-
-
-def test_mixed_source_build_lands_pfr_and_nflverse_rows():
-    """build([1985, 2017]) routes 1985 through PFR and 2017 through
-    nflverse — both data sources land into the same DB tables and
-    coexist without PK conflicts."""
+def test_pipeline_is_idempotent():
+    """Re-running build for the same season replaces rows cleanly —
+    no PK collisions, identical row counts."""
     con = connect(None)
     apply_schema(con)
     try:
-        summary = build(
-            seasons=[1985, 2017],
-            con=con,
-            player_loader=fake_player_stats_loader,
-            draft_loader=fake_draft_loader,
-            pfr_scraper=_fixture_scraper(),
-        )
-        assert summary["pfr_seasons"] == [1985]
-        assert summary["nfl_seasons"] == [2017]
+        build(seasons=[1985], con=con, pfr_scraper=_scraper())
+        n_stats_before = con.execute(
+            "SELECT COUNT(*) FROM player_season_stats"
+        ).fetchone()[0]
+        n_drafts_before = con.execute(
+            "SELECT COUNT(*) FROM draft_picks"
+        ).fetchone()[0]
 
-        # Player-season rows landed for both years.
-        counts = dict(con.execute(
-            "SELECT season, COUNT(*) FROM player_season_stats GROUP BY season"
-        ).fetchall())
-        assert counts[1985] > 800     # PFR side
-        assert counts[2017] == 1      # nflverse fixture has just CMC
+        build(seasons=[1985], con=con, pfr_scraper=_scraper())
+        n_stats_after = con.execute(
+            "SELECT COUNT(*) FROM player_season_stats"
+        ).fetchone()[0]
+        n_drafts_after = con.execute(
+            "SELECT COUNT(*) FROM draft_picks"
+        ).fetchone()[0]
 
-        # Draft-picks landed for both year ranges.
-        pfr_draft_n = con.execute(
-            "SELECT COUNT(*) FROM draft_picks WHERE year < 1999"
-        ).fetchone()[0]
-        nfl_draft_n = con.execute(
-            "SELECT COUNT(*) FROM draft_picks WHERE year >= 1999"
-        ).fetchone()[0]
-        assert pfr_draft_n > 200
-        # The fake_draft_loader has two players (CMC 2017 + Urlacher 2000),
-        # both 1999+ so both go to the nflverse side.
-        assert nfl_draft_n == 2
-
-        # Player IDs use distinct namespaces by source.
-        pfr_ids = con.execute(
-            "SELECT COUNT(*) FROM players WHERE player_id LIKE 'pfr:%'"
-        ).fetchone()[0]
-        gsis_ids = con.execute(
-            "SELECT COUNT(*) FROM players WHERE player_id NOT LIKE 'pfr:%'"
-        ).fetchone()[0]
-        assert pfr_ids > 800
-        assert gsis_ids >= 1
+        assert n_stats_before == n_stats_after
+        assert n_drafts_before == n_drafts_after
     finally:
         con.close()
 
 
-def test_q2_mixed_source_nfc_central_returns_pre_1999_rows():
-    """The Q2 motivating query: 'NFC North 1990-2005, historical mode'.
-    With the PFR backfill landing pre-1999 data, the NFC Central side
-    of that window returns real rows now."""
-    con = connect(None)
-    apply_schema(con)
-    try:
-        build(
-            seasons=[1985],   # one PFR year so we have NFC Central data
-            con=con,
-            player_loader=fake_player_stats_loader,
-            draft_loader=fake_draft_loader,
-            pfr_scraper=_fixture_scraper(),
-        )
-        rows = con.execute(
-            """
-            SELECT name, team, season, def_int, division
-            FROM   v_player_season_full
-            WHERE  division = 'NFC Central'
-              AND  def_int IS NOT NULL
-              AND  def_int > 0
-            ORDER BY def_int DESC
-            LIMIT 10
-            """
-        ).fetchall()
-        # Mike Singletary, Wilber Marshall, Mike Richardson etc. should
-        # appear — Bears '85 had a lot of INTs.
-        assert len(rows) > 0
-        # Every row is from the NFC Central in 1985.
-        for r in rows:
-            assert r[2] == 1985
-            assert r[4] == "NFC Central"
-            assert r[1] in {"CHI", "DET", "GNB", "MIN", "TAM"}
-    finally:
-        con.close()
+# --- Standings W/L ------------------------------------------------------
 
 
-def test_pre_1999_nflverse_draft_picks_land_when_only_nflverse_years():
-    """Regression: Peyton Manning was drafted 1998 R1 P1 (pre-1999).
-    A nflverse-only build for 1999+ used to filter out his draft
-    entry, so his 1999+ stats rows showed as 'undrafted' via the
-    LEFT JOIN. nflverse's full draft history (1936+) now flows in
-    regardless of the requested season range."""
-
-    def loader_with_pre_1999_drafts():
-        return pl.DataFrame([
-            {  # Peyton Manning, 1998 R1 P1 by IND
-                "season": 1998, "round": 1, "pick": 1, "team": "IND",
-                "gsis_id": "00-0010346", "pfr_player_id": "MannPe00",
-                "pfr_player_name": "Peyton Manning", "position": "QB",
-            },
-            {  # Marshall Faulk, 1994 R1 P2 by IND
-                "season": 1994, "round": 1, "pick": 2, "team": "IND",
-                "gsis_id": "00-0001234", "pfr_player_id": "FaulMa00",
-                "pfr_player_name": "Marshall Faulk", "position": "RB",
-            },
-            {  # CMC, 2017 R1 P8 by CAR (post-NFLVERSE_MIN_YEAR sanity)
-                "season": 2017, "round": 1, "pick": 8, "team": "CAR",
-                "gsis_id": "00-0033280", "pfr_player_id": "McCaCh01",
-                "pfr_player_name": "Christian McCaffrey", "position": "RB",
-            },
-        ])
-
-    con = connect(None)
-    apply_schema(con)
-    try:
-        # Build with only nflverse years — no PFR scraper passed because
-        # no pre-1999 seasons are in the requested range.
-        build(
-            seasons=[2017],
-            con=con,
-            player_loader=fake_player_stats_loader,
-            draft_loader=loader_with_pre_1999_drafts,
-        )
-        # All three drafts should be present.
-        rows = dict(con.execute(
-            "SELECT player_id, year FROM draft_picks ORDER BY year"
-        ).fetchall())
-        assert "00-0001234" in rows  # Faulk 1994
-        assert rows["00-0001234"] == 1994
-        assert "00-0010346" in rows  # Manning 1998
-        assert rows["00-0010346"] == 1998
-        assert "00-0033280" in rows  # CMC 2017
-        assert rows["00-0033280"] == 2017
-    finally:
-        con.close()
+def test_pipeline_attaches_team_records_from_standings(populated_db):
+    """The Bears went 15-1 in 1985 (Super Bowl champs); Dolphins 12-4."""
+    con, _ = populated_db
+    bears = con.execute(
+        "SELECT wins, losses FROM team_seasons "
+        "WHERE franchise = 'bears' AND season = 1985"
+    ).fetchone()
+    assert bears == (15, 1)
+    dolphins = con.execute(
+        "SELECT wins, losses FROM team_seasons "
+        "WHERE franchise = 'dolphins' AND season = 1985"
+    ).fetchone()
+    assert dolphins == (12, 4)
 
 
-def test_namespaced_draft_replacement_does_not_clobber_other_namespace():
-    """Re-running the nflverse side should not delete pfr:-keyed
-    draft rows that a previous PFR-side run inserted."""
-    con = connect(None)
-    apply_schema(con)
-    try:
-        # First build: PFR side populates pfr:-namespace; nflverse
-        # side populates GSIS namespace.
-        build(
-            seasons=[1985, 2017],
-            con=con,
-            player_loader=fake_player_stats_loader,
-            draft_loader=fake_draft_loader,
-            pfr_scraper=_fixture_scraper(),
-        )
-        pfr_count_before = con.execute(
-            "SELECT COUNT(*) FROM draft_picks WHERE player_id LIKE 'pfr:%'"
-        ).fetchone()[0]
-        assert pfr_count_before > 0
-
-        # Second build: nflverse-only run. Should not touch pfr: rows.
-        build(
-            seasons=[2017],
-            con=con,
-            player_loader=fake_player_stats_loader,
-            draft_loader=fake_draft_loader,
-        )
-        pfr_count_after = con.execute(
-            "SELECT COUNT(*) FROM draft_picks WHERE player_id LIKE 'pfr:%'"
-        ).fetchone()[0]
-        assert pfr_count_after == pfr_count_before
-    finally:
-        con.close()
+# --- Supplemental drafts -----------------------------------------------
 
 
-def test_supplemental_drafts_inserted_for_matched_player():
-    """Hand-encoded supp draft picks land into draft_picks if the
-    player's name matches a row in the populated players table."""
-    # Synthetic: player_stats loader returns a Cris Carter row
-    # (a known supp draftee, 1987 R4 by PHI). Pipeline should match
-    # by name and insert his supp draft entry.
-    cris_carter_row = {**CMC_2017,
-        "player_id": "00-supp-test",
-        "player_display_name": "Cris Carter",
-        "season": 2000,
-        "recent_team": "MIN",
-        "position": "WR",
-    }
+def test_supplemental_drafts_inserted_for_1985_players(populated_db):
+    """Several supp-draft picks played in 1985:
+    - Steve Young (1984 supp R1 TAM, USFL until 1985)
+    - Reggie White (1984 supp R1 PHI)
+    - Bernie Kosar (1985 supp R1 CLE)
+    Each should produce a draft_picks row whose player_id matches the
+    1985 PFR slug."""
+    con, summary = populated_db
+    assert summary["supplemental_draft_rows"] >= 1
 
-    def loader(seasons):
-        return pl.DataFrame([cris_carter_row])
-
-    def empty_drafts():
-        # No regular drafts — just want to verify supp drafts populate.
-        return pl.DataFrame(
-            schema={
-                "season":           pl.Int64,
-                "round":            pl.Int64,
-                "pick":             pl.Int64,
-                "team":             pl.Utf8,
-                "gsis_id":          pl.Utf8,
-                "pfr_player_id":    pl.Utf8,
-                "pfr_player_name":  pl.Utf8,
-                "position":         pl.Utf8,
-            }
-        )
-
-    con = connect(None)
-    apply_schema(con)
-    try:
-        summary = build(
-            seasons=[2000],
-            con=con,
-            player_loader=loader,
-            draft_loader=empty_drafts,
-        )
-        # Supp draft for Cris Carter inserted.
-        assert summary["supplemental_draft_rows"] >= 1
-        carter_draft = con.execute(
-            "SELECT year, round, team, overall_pick FROM draft_picks "
-            "WHERE player_id = '00-supp-test'"
-        ).fetchone()
-        assert carter_draft == (1987, 4, "PHI", 0)
-
-        # And he no longer appears as undrafted in v_player_season_full.
-        joined = con.execute(
-            "SELECT name, draft_round, draft_year "
-            "FROM v_player_season_full "
-            "WHERE name = 'Cris Carter'"
-        ).fetchone()
-        assert joined == ("Cris Carter", 4, 1987)
-    finally:
-        con.close()
-
-
-def test_supplemental_drafts_no_op_for_unknown_player():
-    """Supp drafts for players who didn't make it into the DB this run
-    are skipped (no orphan rows)."""
-    # Fixture loader has only CMC; none of the supp picks are present.
-    con = connect(None)
-    apply_schema(con)
-    try:
-        summary = build(
-            seasons=[2017],
-            con=con,
-            player_loader=fake_player_stats_loader,
-            draft_loader=fake_draft_loader,
-        )
-        # No supp picks should match (Cris Carter, Bernie Kosar etc.
-        # aren't in this DB).
-        assert summary["supplemental_draft_rows"] == 0
-    finally:
-        con.close()
+    # Steve Young's supp draft entry (1984 R1 TAM).
+    young = con.execute(
+        """
+        SELECT dp.year, dp.round, dp.team
+        FROM   draft_picks dp
+        JOIN   players p USING (player_id)
+        WHERE  p.name = 'Steve Young' AND dp.year = 1984
+        """
+    ).fetchall()
+    assert (1984, 1, "TAM") in young
 
 
 def test_supplemental_drafts_idempotent():
     """Re-running build doesn't duplicate supp draft rows."""
-    cris = {**CMC_2017, "player_id": "00-cris", "player_display_name": "Cris Carter",
-            "season": 2000, "recent_team": "MIN", "position": "WR"}
-
-    def loader(seasons):
-        return pl.DataFrame([cris])
-
-    def empty_drafts():
-        return pl.DataFrame(
-            schema={
-                "season": pl.Int64, "round": pl.Int64, "pick": pl.Int64,
-                "team": pl.Utf8, "gsis_id": pl.Utf8,
-                "pfr_player_id": pl.Utf8, "pfr_player_name": pl.Utf8,
-                "position": pl.Utf8,
-            }
-        )
-
     con = connect(None)
     apply_schema(con)
     try:
         for _ in range(2):
-            build(seasons=[2000], con=con, player_loader=loader, draft_loader=empty_drafts)
-        # Still exactly one Cris Carter draft row.
+            build(seasons=[1985], con=con, pfr_scraper=_scraper())
+        # Steve Young still has exactly one draft row.
         n = con.execute(
-            "SELECT COUNT(*) FROM draft_picks WHERE player_id = '00-cris'"
+            """
+            SELECT COUNT(*) FROM draft_picks dp
+            JOIN   players p USING (player_id)
+            WHERE  p.name = 'Steve Young' AND dp.year = 1984
+            """
         ).fetchone()[0]
         assert n == 1
-    finally:
-        con.close()
-
-
-def test_pipeline_attaches_team_records_from_standings():
-    """Standings parser feeds W/L into team_seasons; verify they land."""
-    con = connect(None)
-    apply_schema(con)
-    try:
-        build(
-            seasons=[1985],
-            con=con,
-            player_loader=fake_player_stats_loader,
-            draft_loader=fake_draft_loader,
-            pfr_scraper=_fixture_scraper(),
-        )
-        # Bears were 15-1 in 1985 (NFC Central, franchise=bears).
-        bears = con.execute(
-            "SELECT wins, losses FROM team_seasons WHERE franchise = 'bears' AND season = 1985"
-        ).fetchone()
-        assert bears == (15, 1)
-        # Dolphins were 12-4.
-        dolphins = con.execute(
-            "SELECT wins, losses FROM team_seasons WHERE franchise = 'dolphins' AND season = 1985"
-        ).fetchone()
-        assert dolphins == (12, 4)
     finally:
         con.close()
