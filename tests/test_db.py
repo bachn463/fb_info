@@ -31,6 +31,40 @@ def test_apply_schema_is_idempotent(db):
     assert _table_names(db) == {"players", "draft_picks", "team_seasons", "player_season_stats", "player_awards"}
 
 
+def test_apply_schema_migrates_missing_college_column():
+    """Simulates an existing DB created before the college column
+    landed. apply_schema should detect the missing column on
+    draft_picks and ALTER it in before (re)creating views — otherwise
+    v_player_season_full's `d.college` reference fails to bind."""
+    from ffpts.db import apply_schema
+
+    con = duckdb.connect(":memory:")
+    # Old draft_picks schema, sans college.
+    con.execute(
+        """
+        CREATE TABLE draft_picks (
+            player_id    TEXT PRIMARY KEY,
+            year         INTEGER NOT NULL,
+            round        INTEGER NOT NULL,
+            overall_pick INTEGER NOT NULL,
+            team         TEXT    NOT NULL
+        )
+        """
+    )
+    # Fresh apply_schema must auto-migrate and not raise.
+    apply_schema(con)
+    cols = {
+        r[0] for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'draft_picks'"
+        ).fetchall()
+    }
+    assert "college" in cols
+    # And the view that references d.college must now resolve.
+    con.execute("SELECT college FROM v_player_season_full LIMIT 0").fetchall()
+    con.close()
+
+
 def test_player_season_stats_pk_rejects_duplicates(db):
     db.execute("INSERT INTO players (player_id, name) VALUES ('McCaCh01', 'CMC')")
     db.execute(

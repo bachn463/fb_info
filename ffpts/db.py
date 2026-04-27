@@ -214,10 +214,31 @@ def connect(path: str | Path | None = None) -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(db_path))
 
 
+# Lightweight forward migrations for columns added after a DB was
+# first populated. CREATE TABLE IF NOT EXISTS is a no-op against an
+# existing table, so additive columns need an explicit ALTER. Each
+# entry is (table, column, type) — DuckDB's ADD COLUMN IF NOT EXISTS
+# makes this idempotent.
+_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("draft_picks", "college", "TEXT"),
+]
+
+
+def _migrate_columns(con: duckdb.DuckDBPyConnection) -> None:
+    for table, column, sql_type in _COLUMN_MIGRATIONS:
+        con.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}"
+        )
+
+
 def apply_schema(con: duckdb.DuckDBPyConnection) -> None:
-    """Create all tables and views. Safe to run on an existing DB."""
+    """Create all tables and views. Safe to run on an existing DB —
+    additive column migrations run before views are (re)created so
+    a view referencing a newly-added column doesn't fail at bind time
+    on a previously-populated DB."""
     for stmt in SCHEMA_DDL:
         con.execute(stmt)
+    _migrate_columns(con)
     for stmt in VIEWS_DDL:
         con.execute(stmt)
 
