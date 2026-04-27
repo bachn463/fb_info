@@ -436,6 +436,121 @@ def test_pos_top_combined_filters(db):
     assert [r[0] for r in rows] == ["Top WR"]
 
 
+def _seed_awards(db):
+    """Seed a few players with awards rows.
+
+    - 'MVP Guy' won MVP in 2020 (vote_finish=1)
+    - 'Runner Up' had MVP vote_finish=2 in 2020 (didn't win)
+    - 'Pro Bowler' had PB in 2020 (binary award)
+    - 'Rookie OROY' is in his first season 2020 with OROY win
+    """
+    db.execute("""
+        INSERT INTO players (player_id, name) VALUES
+            ('mvp_g',   'MVP Guy'),
+            ('runner',  'Runner Up'),
+            ('pb_only', 'Pro Bowler'),
+            ('rookie',  'Rookie OROY')
+    """)
+    db.execute("""
+        INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES
+            ('mvp_g',   2020, 'KC',  'QB', 410.0),
+            ('mvp_g',   2021, 'KC',  'QB', 380.0),
+            ('runner',  2020, 'BUF', 'QB', 395.0),
+            ('pb_only', 2020, 'TB',  'WR', 320.0),
+            ('rookie',  2020, 'CIN', 'WR', 305.0)
+    """)
+    db.execute("""
+        INSERT INTO player_awards (player_id, season, award_type, vote_finish) VALUES
+            ('mvp_g',   2020, 'MVP',      1),
+            ('mvp_g',   2020, 'PB',       NULL),
+            ('runner',  2020, 'MVP',      2),
+            ('runner',  2020, 'PB',       NULL),
+            ('pb_only', 2020, 'PB',       NULL),
+            ('rookie',  2020, 'OROY',     1),
+            ('rookie',  2020, 'AP_FIRST', NULL)
+    """)
+
+
+def test_has_award_filter_only_includes_winners(db):
+    """--has-award MVP returns the actual MVP winner only, not the
+    runner-up who got vote_finish=2."""
+    _seed_awards(db)
+    sql, params = pos_topN("ALL", n=10, rank_by="fpts_ppr", has_award=["MVP"])
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    assert names == ["MVP Guy"]
+
+
+def test_has_award_filter_pro_bowl_includes_all_pro_bowlers(db):
+    """Binary award (PB has NULL vote_finish) — all rows that have
+    the entry are 'wins'."""
+    _seed_awards(db)
+    sql, params = pos_topN("ALL", n=10, rank_by="fpts_ppr", has_award=["PB"])
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    # MVP Guy, Runner Up, Pro Bowler — all 2020 PB.
+    assert sorted(names) == sorted(["MVP Guy", "Runner Up", "Pro Bowler"])
+
+
+def test_has_award_filter_multi_award_or_semantics(db):
+    """--has-award MVP --has-award OROY returns winners of either."""
+    _seed_awards(db)
+    sql, params = pos_topN(
+        "ALL", n=10, rank_by="fpts_ppr",
+        has_award=["MVP", "OROY"],
+    )
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    # MVP Guy (MVP) + Rookie OROY (OROY).
+    assert sorted(names) == sorted(["MVP Guy", "Rookie OROY"])
+
+
+def test_has_award_normalizes_case():
+    """Lowercase award labels work too."""
+    sql, params = pos_topN("ALL", n=5, rank_by="fpts_ppr", has_award=["mvp"])
+    # No DB query — just confirm no ValueError.
+    assert "MVP" in params
+
+
+def test_has_award_unknown_label_raises():
+    with pytest.raises(ValueError):
+        pos_topN("ALL", has_award=["BEST_HAIRCUT"])
+
+
+def test_rookie_only_filters_to_first_season(db):
+    """Rookie OROY's only season is 2020 (his rookie year). MVP Guy
+    appears in both 2020 and 2021; rookie_only restricts to 2020."""
+    _seed_awards(db)
+    sql, params = pos_topN("ALL", n=10, rank_by="fpts_ppr", rookie_only=True)
+    rows = db.execute(sql, params).fetchall()
+    seasons_by_name = {r[0]: r[2] for r in rows}
+    # MVP Guy: 2 seasons -> rookie season = 2020 (MIN). His 2021 row excluded.
+    assert seasons_by_name["MVP Guy"] == 2020
+    # Multiple players' 2020 rows survive.
+    assert "Rookie OROY" in seasons_by_name
+
+
+def test_combined_has_award_and_rookie_only(db):
+    """Top OROY winners during their rookie year — implements the user's
+    motivating example."""
+    _seed_awards(db)
+    sql, params = pos_topN(
+        "ALL", n=10, rank_by="fpts_ppr",
+        has_award=["OROY"], rookie_only=True,
+    )
+    rows = db.execute(sql, params).fetchall()
+    assert [(r[0], r[2]) for r in rows] == [("Rookie OROY", 2020)]
+
+
+def test_no_filters_unchanged_column_order_backward_compat(db):
+    """Backward-compat sanity: pos_topN with no new filters returns
+    the same 8 columns in the same order as before C6."""
+    sql, params = pos_topN("ALL", n=1, rank_by="fpts_ppr")
+    cols = [d[0] for d in db.execute(sql, params).description]
+    assert cols == [
+        "name", "team", "season", "position", "rank_value",
+        "draft_round", "draft_year", "draft_overall_pick",
+    ]
+
+
 def test_pos_top_returns_expected_column_order(db):
     _seed(db)
     sql, params = pos_topN("QB", n=1, rank_by="pass_yds")

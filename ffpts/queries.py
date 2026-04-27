@@ -158,6 +158,15 @@ POSITION_ALIASES: dict[str, list[str] | None] = {
     "ALL":  None,
 }
 
+# Award types accepted by the has_award filter. Validated up-front so
+# unknown labels raise a clear ValueError instead of silently matching
+# nothing.
+AWARD_TYPES_ALLOWED: frozenset[str] = frozenset({
+    "MVP", "OPOY", "DPOY", "OROY", "DROY", "CPOY",
+    "WPMOY",
+    "PB", "AP_FIRST", "AP_SECOND",
+})
+
 
 def pos_topN(
     position: str,
@@ -173,6 +182,9 @@ def pos_topN(
     first_name_contains: str | None = None,
     last_name_contains: str | None = None,
     unique: bool = False,
+    # Backward-compat additive filters — each defaults to a no-op.
+    has_award: list[str] | None = None,
+    rookie_only: bool = False,
 ) -> tuple[str, list]:
     """Top-N player-seasons at a given position, ranked by ``rank_by``.
 
@@ -210,11 +222,24 @@ def pos_topN(
     on the rank value resolve to the earlier season. The default
     (False) preserves the player-season behavior.
 
+    Award & rookie filters (additive, default no-op):
+    - ``has_award``: list of award_type labels. Filters to player-
+      seasons where the player won (or was binary-awarded) at least
+      one of the listed awards that year. "Won" means
+      ``vote_finish=1`` for voted awards (MVP/OPOY/...) or any entry
+      for binary ones (PB/AP_FIRST/AP_SECOND/WPMOY). Validated against
+      ``AWARD_TYPES_ALLOWED``; unknown labels raise ``ValueError``.
+    - ``rookie_only``: when True, restricts to each player's first
+      season as recorded in our DB. Computed as the row's ``season``
+      equalling ``MIN(season) FROM player_season_stats`` for that
+      player. Caveat: "first season we have data for", which is the
+      rookie year for almost everyone in scope.
+
     Returns rows of (name, team, season, position, rank_value,
-    draft_round, draft_year, draft_overall_pick) ordered by rank_by
-    desc then season asc. Player-season default — same player can
-    appear multiple times for different qualifying years (unless
-    ``unique=True``).
+    draft_round, draft_year, draft_overall_pick) — column set is
+    fixed and unchanged regardless of which optional filters are
+    enabled. Player-season default — same player can appear multiple
+    times for different qualifying years (unless ``unique=True``).
     """
     if rank_by not in RANK_BY_ALLOWED:
         raise ValueError(
@@ -285,6 +310,37 @@ def pos_topN(
             "trim(substr(name, length(split_part(name, ' ', 1)) + 1)) ILIKE ?"
         )
         params.append(f"%{last_name_contains}%")
+
+    # Awards filter: EXISTS subquery against player_awards. award_type
+    # is interpolated against the validated allowlist so it's safe.
+    if has_award:
+        normalized: list[str] = []
+        for a in has_award:
+            label = str(a).upper()
+            if label not in AWARD_TYPES_ALLOWED:
+                raise ValueError(
+                    f"unknown award_type {a!r}; allowed: "
+                    f"{sorted(AWARD_TYPES_ALLOWED)}"
+                )
+            normalized.append(label)
+        placeholders = ",".join(["?"] * len(normalized))
+        where_clauses.append(
+            f"EXISTS ("
+            f"SELECT 1 FROM player_awards pa "
+            f"WHERE  pa.player_id = v_player_season_full.player_id "
+            f"  AND  pa.season    = v_player_season_full.season "
+            f"  AND  pa.award_type IN ({placeholders}) "
+            f"  AND  (pa.vote_finish IS NULL OR pa.vote_finish = 1)"
+            f")"
+        )
+        params.extend(normalized)
+
+    # Rookie-only: season equals first season we have stats for.
+    if rookie_only:
+        where_clauses.append(
+            "season = (SELECT MIN(season) FROM player_season_stats "
+            "WHERE player_id = v_player_season_full.player_id)"
+        )
 
     where_sql = " AND ".join(where_clauses)
     if unique:
