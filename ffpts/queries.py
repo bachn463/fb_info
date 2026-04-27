@@ -136,8 +136,10 @@ RANK_BY_ALLOWED: frozenset[str] = frozenset({
     "pass_cmp_pct",
     # rushing
     "rush_att", "rush_yds", "rush_td", "rush_long",
-    # receiving
+    # receiving — catch_rate is computed in v_player_season_full as
+    # rec / NULLIF(targets, 0); rankable like any other column.
     "targets", "rec", "rec_yds", "rec_td", "rec_long",
+    "catch_rate",
     # defense
     "def_tackles_solo", "def_tackles_assist", "def_tackles_combined",
     "def_sacks", "def_int", "def_int_yds", "def_int_td",
@@ -523,11 +525,15 @@ def pos_topN(
 # Career totals — sums across all qualifying seasons for a player
 # ---------------------------------------------------------------------------
 
-# Per-season ratio stats that are rankable (pos_topN-eligible) but not
-# meaningful as a SUM across seasons. career_topN rejects these so a
-# user asking for "career pass_cmp_pct" gets a clear error rather than
-# a nonsense sum-of-percentages number.
-_CAREER_RATIO_RANK_BY: frozenset[str] = frozenset({"pass_cmp_pct"})
+# Per-season ratio stats. Summing percentages across seasons would be
+# nonsense, so career_topN rebuilds these from the underlying
+# (numerator, denominator) columns: SUM(num) / NULLIF(SUM(den), 0).
+# NULLIF guards every denominator so a player with no qualifying
+# attempts yields NULL rather than a divide-by-zero error.
+_CAREER_RATIO_RANK_BY: dict[str, tuple[str, str]] = {
+    "pass_cmp_pct": ("pass_cmp", "pass_att"),
+    "catch_rate":   ("rec",      "targets"),
+}
 
 
 def career_topN(
@@ -555,14 +561,21 @@ def career_topN(
             f"unknown rank_by column {rank_by!r}; allowed: "
             f"{sorted(RANK_BY_ALLOWED)}"
         )
-    if rank_by in _CAREER_RATIO_RANK_BY:
-        raise ValueError(
-            f"{rank_by!r} is a per-season ratio stat — summing it "
-            "across seasons isn't meaningful. Use the single-season "
-            "pos_topN helper instead."
-        )
 
-    where: list[str] = [f"s.{rank_by} IS NOT NULL"]
+    # Ratio stats: rebuild from underlying num/denom across seasons.
+    # career_total = SUM(num) / NULLIF(SUM(den), 0) — never divides by
+    # zero. The WHERE filter requires the denominator to be present so
+    # a player with zero qualifying attempts is excluded from the
+    # leaderboard rather than producing a NULL career_total row.
+    if rank_by in _CAREER_RATIO_RANK_BY:
+        num, den = _CAREER_RATIO_RANK_BY[rank_by]
+        rank_expr = (
+            f"CAST(SUM(s.{num}) AS DOUBLE) / NULLIF(SUM(s.{den}), 0)"
+        )
+        where: list[str] = [f"s.{den} > 0"]
+    else:
+        rank_expr = f"SUM(s.{rank_by})"
+        where = [f"s.{rank_by} IS NOT NULL"]
     params: list = []
     if start is not None:
         where.append("s.season >= ?")
@@ -622,7 +635,7 @@ def career_topN(
                     WHERE  s2.player_id = p.player_id
                     GROUP BY s2.team
                 ))                                                     AS teams,
-               SUM(s.{rank_by})                                        AS career_total,
+               {rank_expr}                                             AS career_total,
                COUNT(DISTINCT s.season)                                AS seasons,
                MIN(s.season)                                           AS first_season,
                MAX(s.season)                                           AS last_season

@@ -1241,8 +1241,9 @@ _RANDOM_RANK_BY: list[str] = (
     + ["pass_rating"] * 2 + ["pass_cmp"] * 2
     # Rushing — 14
     + ["rush_yds"] * 5 + ["rush_td"] * 5 + ["rush_att"] * 4
-    # Receiving — 18
-    + ["rec_yds"] * 6 + ["rec"] * 5 + ["rec_td"] * 4 + ["targets"] * 3
+    # Receiving — 18 (catch_rate is the new ratio stat)
+    + ["rec_yds"] * 5 + ["rec"] * 5 + ["rec_td"] * 4
+    + ["targets"] * 2 + ["catch_rate"] * 2
     # Fantasy — 38 (PPR most popular, hence heaviest)
     + ["fpts_ppr"] * 16 + ["fpts_half"] * 12 + ["fpts_std"] * 10
     # Defense — 10
@@ -1291,6 +1292,7 @@ _STAT_COMPATIBLE_POSITIONS: dict[str, list[str]] = {
     "rec":                   ["WR"] * 3 + ["TE", "RB", "FLEX", "ALL"],
     "rec_td":                ["WR"] * 2 + ["TE", "RB", "FLEX", "ALL"],
     "targets":               ["WR"] * 2 + ["TE", "RB", "FLEX", "ALL"],
+    "catch_rate":            ["WR"] * 2 + ["TE", "RB", "FLEX", "ALL"],
     "fpts_ppr":              ["FLEX"] * 2 + ["ALL"] * 2 + ["QB", "RB", "WR", "TE"],
     "fpts_half":             ["FLEX"] * 2 + ["ALL"] * 2 + ["QB", "RB", "WR", "TE"],
     "fpts_std":              ["FLEX"] * 2 + ["ALL"] * 2 + ["QB", "RB", "WR", "TE"],
@@ -1357,6 +1359,7 @@ _COMPANION_MIN_STAT_FOR: dict[str, list[tuple[str, float]]] = {
     "rec":          [("rec_yds", 800), ("rec_td", 5)],
     "rec_td":       [("rec_yds", 600), ("rec", 40)],
     "targets":      [("rec", 50), ("rec_yds", 600)],
+    "catch_rate":   [("targets", 30), ("rec", 30), ("rec_yds", 400)],
     "fpts_ppr":     [("games", 12), ("rec", 40)],
     "fpts_half":    [("games", 12), ("rush_att", 100)],
     "fpts_std":     [("games", 12), ("rush_td", 5)],
@@ -1459,11 +1462,13 @@ def _random_trivia_template(rng) -> dict:
 
     # Companion min_stat / max_stat thresholds. Pick a stat OTHER than
     # rank_by from the curated lists so the threshold actually narrows
-    # the pool meaningfully. pass_cmp_pct ALWAYS gets a min_stat for
-    # pass_att (otherwise leaderboards are dominated by 1-attempt
-    # trick plays).
+    # the pool meaningfully. Ratio stats ALWAYS get a sample-size floor
+    # on the denominator so leaderboards aren't dominated by 1-attempt
+    # trick plays.
     if rank_by == "pass_cmp_pct":
         spec["min_stats"] = {"pass_att": 100}
+    elif rank_by == "catch_rate":
+        spec["min_stats"] = {"targets": 30}
     if rng.random() < p_min_stat:
         candidates = _COMPANION_MIN_STAT_FOR.get(rank_by, [])
         if candidates:

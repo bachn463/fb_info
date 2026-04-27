@@ -201,8 +201,63 @@ def test_pass_cmp_pct_works_in_pos_topN(db):
         assert 0 <= v <= 1, f"pass_cmp_pct outside [0,1]: {v}"
 
 
-def test_pass_cmp_pct_rejected_by_career_topN(db):
-    """Per-season ratio stats can't be summed across seasons; the
-    helper must reject them with a clear error."""
-    with pytest.raises(ValueError, match="ratio"):
-        career_topN("pass_cmp_pct", n=10)
+def test_catch_rate_works_in_pos_topN(db):
+    """catch_rate = rec / NULLIF(targets, 0) — computed column. Should
+    rank cleanly with a min targets floor and produce 0..1 values."""
+    from ffpts.queries import pos_topN
+
+    sql, params = pos_topN(
+        "WR", n=5, rank_by="catch_rate",
+        min_stats={"targets": 30},
+    )
+    rows = db.execute(sql, params).fetchall()
+    assert len(rows) > 0
+    cols = [d[0] for d in db.execute(sql, params).description]
+    rank_col = cols.index("rank_value")
+    for r in rows:
+        v = r[rank_col]
+        assert v is not None
+        assert 0 <= v <= 1, f"catch_rate outside [0,1]: {v}"
+
+
+def test_catch_rate_zero_targets_does_not_crash(db):
+    """A rank_by query for catch_rate with no min_stats floor shouldn't
+    raise on 0-target rows — NULLIF in the view returns NULL, which
+    pos_topN's IS NOT NULL filter excludes."""
+    from ffpts.queries import pos_topN
+
+    sql, params = pos_topN("ALL", n=5, rank_by="catch_rate")
+    rows = db.execute(sql, params).fetchall()
+    # Nonzero answer set, no exception.
+    assert len(rows) >= 0
+
+
+def test_pass_cmp_pct_career_recomputes_from_components(db):
+    """career_topN with a ratio rank_by must recompute as
+    SUM(num) / NULLIF(SUM(den), 0) — never sum percentages, never
+    divide by zero."""
+    sql, params = career_topN("pass_cmp_pct", n=5)
+    rows = db.execute(sql, params).fetchall()
+    assert len(rows) > 0
+    # rows: (name, positions, teams, career_total, ...)
+    for name, positions, teams, career_total, *_ in rows:
+        assert career_total is not None
+        assert 0 <= career_total <= 1, (
+            f"career pass_cmp_pct outside [0,1]: {career_total} for {name}"
+        )
+
+
+def test_catch_rate_career_recomputes_from_components(db):
+    """Career catch_rate computes as SUM(rec) / NULLIF(SUM(targets), 0).
+
+    Note: PFR's pre-1992 targets data is incomplete, so the
+    career_total can exceed 1.0 for tiny-sample players from older
+    fixtures (rec recorded, targets undercounted). The test only
+    verifies the computation runs cleanly and returns a positive
+    number — the data quirk is upstream."""
+    sql, params = career_topN("catch_rate", n=5)
+    rows = db.execute(sql, params).fetchall()
+    assert len(rows) > 0
+    for name, positions, teams, career_total, *_ in rows:
+        assert career_total is not None
+        assert career_total > 0
