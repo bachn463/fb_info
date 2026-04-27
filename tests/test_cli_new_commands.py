@@ -512,6 +512,90 @@ def test_cli_ask_pos_top_college_runs(tmp_path):
     assert result.exit_code == 0, result.output
 
 
+def test_trivia_random_user_pinned_year_range(tmp_path):
+    """User-supplied --start/--end on `trivia random` should pin the
+    year range. Title must contain those exact years across multiple
+    seeds (rest of the template is still random)."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    for seed in (1, 7, 42):
+        r = runner.invoke(
+            app,
+            ["trivia", "random", "--seed", str(seed),
+             "--start", "1985", "--end", "1985",
+             "--db", str(db)],
+            input="quit\n",
+        )
+        assert r.exit_code == 0, r.output
+        title = next(
+            (l for l in r.output.splitlines() if l.startswith("Top ")), None,
+        )
+        assert title is not None
+        assert "(1985-1985)" in title, f"seed {seed}: {title}"
+
+
+def test_trivia_random_user_pinned_team(tmp_path):
+    """--team should pin to that team across all seeds."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    r = runner.invoke(
+        app,
+        ["trivia", "random", "--seed", "5",
+         "--team", "PIT",
+         "--start", "1985", "--end", "1985",
+         "--db", str(db)],
+        input="quit\n",
+    )
+    assert r.exit_code == 0, r.output
+    title = next(
+        (l for l in r.output.splitlines() if l.startswith("Top ")), None,
+    )
+    assert title is not None
+    assert "from PIT" in title
+
+
+def test_trivia_random_user_pinned_rank_by(tmp_path):
+    """--rank-by pins the stat across all seeds."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    for seed in (0, 1, 2):
+        r = runner.invoke(
+            app,
+            ["trivia", "random", "--seed", str(seed),
+             "--rank-by", "rush_yds",
+             "--start", "1985", "--end", "1985",
+             "--db", str(db)],
+            input="quit\n",
+        )
+        assert r.exit_code == 0, r.output
+        title = next(
+            (l for l in r.output.splitlines() if l.startswith("Top ")), None,
+        )
+        assert title is not None
+        assert "by rush_yds" in title, f"seed {seed}: {title}"
+
+
+def test_trivia_random_label_changes_with_overrides(tmp_path):
+    """Without overrides the label is "random"; with any override it
+    becomes "random with pins" so the user can see at a glance that
+    their flags took effect."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    plain = runner.invoke(
+        app, ["trivia", "random", "--seed", "1", "--db", str(db)],
+        input="quit\n",
+    )
+    pinned = runner.invoke(
+        app,
+        ["trivia", "random", "--seed", "1",
+         "--start", "1985", "--end", "1985",
+         "--db", str(db)],
+        input="quit\n",
+    )
+    assert "(random)" in plain.output
+    assert "(random with pins)" in pinned.output
+
+
 def test_trivia_random_some_seed_produces_no_unique_title(tmp_path):
     """At least one of the first 30 random seeds should land on a
     `unique=False` template, surfacing the multi-season tag in the

@@ -1496,108 +1496,161 @@ _COMPANION_MAX_STAT_FOR: dict[str, list[tuple[str, float]]] = {
 _LAST_NAME_INITIALS: list[str] = list("ABCDEFGHIJKLMNOPRSTW")
 
 
-def _random_trivia_template(rng) -> dict:
+def _random_trivia_template(
+    rng, overrides: dict | None = None
+) -> dict:
     """Build a fresh template by sampling each filter dimension.
 
     Picks at most one of {team, division, conference} so geo filters
     don't compound into empty sets, and at most one award filter
     (has_award OR ever_won). Year range, rookie_only, and uniqueness
     are independent randomized toggles.
+
+    ``overrides`` (passed by ``trivia random`` when the user supplies
+    flags) pins individual dimensions: any key present in overrides
+    skips the corresponding random pick and uses the user value.
+    Dimensions not in overrides stay random. Empty dict / None means
+    fully random (the default behavior).
     """
-    rank_by = rng.choice(_RANDOM_RANK_BY)
-    # Position is sampled from a stat-specific pool so we don't end up
-    # ranking running backs by passing yards or kickers by sacks. The
-    # weighting (list duplication) keeps natural pairings dominant
-    # while leaving room for occasional cross-position trivia.
-    pos_pool = _STAT_COMPATIBLE_POSITIONS.get(rank_by, ["ALL"])
+    overrides = overrides or {}
+
+    # rank_by — pinned or random. Era floor still applies to whatever
+    # we end up with so def_sacks pre-1982 doesn't sneak through.
+    rank_by = overrides.get("rank_by") or rng.choice(_RANDOM_RANK_BY)
+
+    # Position — pinned, or random from the stat-specific pool.
+    if overrides.get("position"):
+        position = overrides["position"]
+    else:
+        pos_pool = _STAT_COMPATIBLE_POSITIONS.get(rank_by, ["ALL"])
+        position = rng.choice(pos_pool)
+
     spec: dict = {
         "rank_by":  rank_by,
-        "n":        rng.choice(_RANDOM_N_CHOICES),
-        "position": rng.choice(pos_pool),
-        "unique":   rng.choice([True, True, False]),  # 2/3 unique
+        "n":        overrides.get("n") or rng.choice(_RANDOM_N_CHOICES),
+        "position": position,
+        "unique": (
+            overrides["unique"] if "unique" in overrides
+            else rng.choice([True, True, False])  # 2/3 unique by default
+        ),
     }
 
-    # Filter intensity: offense / fantasy templates get richer
-    # qualifiers because their candidate pools are huge and a bare
-    # "top 10 pass_yds" question is too easy; defense and special-teams
-    # pools are smaller, but we still aim for an avg of 2+ active
-    # limiters per template. The retry-until-non-empty loop in
-    # _pick_non_empty_template absorbs the empty-set risk that comes
-    # with stacking filters.
+    # Filter intensity: offense / fantasy get richer qualifiers (huge
+    # candidate pools, bare top-N questions are too easy); defense /
+    # special-teams keep modest probabilities so we don't pile filters
+    # onto an already-narrow pool.
     is_off  = rank_by in _OFFENSE_AND_FANTASY_RANK_BY
     p_year     = 0.80 if is_off else 0.65
-    p_geo      = 0.55 if is_off else 0.45   # cumulative across team/div/conf
-    p_award    = 0.45 if is_off else 0.35   # cumulative across has/ever
+    p_geo      = 0.55 if is_off else 0.45
+    p_award    = 0.45 if is_off else 0.35
     p_rookie   = 0.20 if is_off else 0.15
     p_draft_rd = 0.20 if is_off else 0.15
     p_min_stat = 0.30 if is_off else 0.15
     p_max_stat = 0.15 if is_off else 0.05
     p_initial  = 0.15 if is_off else 0.10
 
-    # Year range — start ≤ end always enforced.
+    # Year range — pin if user gave start and/or end, else maybe random.
     min_floor = _STAT_MIN_SEASON.get(rank_by, 1970)
-    if rng.random() < p_year:
+    pinned_start = overrides.get("start")
+    pinned_end   = overrides.get("end")
+    if pinned_start is not None or pinned_end is not None:
+        if pinned_start is not None:
+            spec["start"] = max(pinned_start, min_floor)
+        elif min_floor > 1970:
+            spec["start"] = min_floor
+        if pinned_end is not None:
+            spec["end"] = pinned_end
+    elif rng.random() < p_year:
         start = rng.randint(min_floor, 2018)
         end   = rng.randint(start, 2024)
         spec["start"] = start
         spec["end"]   = end
     else:
-        # Always respect era floors even when no random year range —
-        # ranking by def_sacks before 1982 returns nothing useful.
+        # No random year range — still respect the era floor.
         if min_floor > 1970:
             spec["start"] = min_floor
 
-    # Geo: at most one of team / division / conference. Split the
-    # cumulative budget into thirds so each variant has equal share.
-    geo = rng.random()
-    if geo < p_geo / 3:
-        spec["team"] = rng.choice(_RANDOM_TEAMS)
-    elif geo < 2 * p_geo / 3:
-        spec["division"] = rng.choice(_RANDOM_DIVISIONS)
-    elif geo < p_geo:
-        spec["conference"] = rng.choice(_RANDOM_CONFERENCES)
+    # Geo: pinned (any of team/division/conference) or random one.
+    if overrides.get("team"):
+        spec["team"] = overrides["team"]
+    elif overrides.get("division"):
+        spec["division"] = overrides["division"]
+    elif overrides.get("conference"):
+        spec["conference"] = overrides["conference"]
+    else:
+        geo = rng.random()
+        if geo < p_geo / 3:
+            spec["team"] = rng.choice(_RANDOM_TEAMS)
+        elif geo < 2 * p_geo / 3:
+            spec["division"] = rng.choice(_RANDOM_DIVISIONS)
+        elif geo < p_geo:
+            spec["conference"] = rng.choice(_RANDOM_CONFERENCES)
 
-    # Award filter: at most one of has_award / ever_won_award. Skew
-    # toward ever_won (richer answer space than has_award-that-season).
-    aw = rng.random()
-    if aw < p_award * 0.4:
-        spec["has_award"] = [rng.choice(_RANDOM_AWARDS)]
-    elif aw < p_award:
-        spec["ever_won_award"] = [rng.choice(_RANDOM_AWARDS)]
+    # Award filter — pinned or random. Skew random toward ever_won
+    # (richer answer space than has_award-that-season).
+    if overrides.get("has_award"):
+        spec["has_award"] = list(overrides["has_award"])
+    elif overrides.get("ever_won_award"):
+        spec["ever_won_award"] = list(overrides["ever_won_award"])
+    else:
+        aw = rng.random()
+        if aw < p_award * 0.4:
+            spec["has_award"] = [rng.choice(_RANDOM_AWARDS)]
+        elif aw < p_award:
+            spec["ever_won_award"] = [rng.choice(_RANDOM_AWARDS)]
 
-    if rng.random() < p_rookie:
+    # rookie_only — pin if user explicitly enabled, else maybe random.
+    if overrides.get("rookie_only"):
+        spec["rookie_only"] = True
+    elif rng.random() < p_rookie:
         spec["rookie_only"] = True
 
-    # Draft-round bucket. Mutually exclusive with rookie_only doesn't
-    # help — both filters compose fine.
-    if rng.random() < p_draft_rd:
+    # Draft-round bucket — pinned or maybe random.
+    if overrides.get("draft_rounds"):
+        spec["draft_rounds"] = list(overrides["draft_rounds"])
+    elif rng.random() < p_draft_rd:
         spec["draft_rounds"] = list(rng.choice(_RANDOM_DRAFT_ROUNDS))
 
-    # Companion min_stat / max_stat thresholds. Pick a stat OTHER than
-    # rank_by from the curated lists so the threshold actually narrows
-    # the pool meaningfully. Ratio stats ALWAYS get a sample-size floor
-    # on the denominator so leaderboards aren't dominated by 1-attempt
-    # trick plays.
-    if rank_by == "pass_cmp_pct":
-        spec["min_stats"] = {"pass_att": 100}
-    elif rank_by == "catch_rate":
-        spec["min_stats"] = {"targets": 30}
-    if rng.random() < p_min_stat:
+    # Companion min_stat / max_stat — pinned overrides win; ratio
+    # stats still ALWAYS get a denominator floor on top of any pinned
+    # min_stats (so pinned min_stats and the auto-floor merge).
+    pinned_min = dict(overrides.get("min_stats") or {})
+    pinned_max = dict(overrides.get("max_stats") or {})
+    if rank_by == "pass_cmp_pct" and "pass_att" not in pinned_min:
+        pinned_min["pass_att"] = 100
+    elif rank_by == "catch_rate" and "targets" not in pinned_min:
+        pinned_min["targets"] = 30
+    if pinned_min:
+        spec["min_stats"] = pinned_min
+    if pinned_max:
+        spec["max_stats"] = pinned_max
+    if not overrides.get("min_stats") and rng.random() < p_min_stat:
         candidates = _COMPANION_MIN_STAT_FOR.get(rank_by, [])
         if candidates:
             stat, value = rng.choice(candidates)
             spec.setdefault("min_stats", {})[stat] = value
-    if rng.random() < p_max_stat:
+    if not overrides.get("max_stats") and rng.random() < p_max_stat:
         candidates = _COMPANION_MAX_STAT_FOR.get(rank_by, [])
         if candidates:
             stat, value = rng.choice(candidates)
             spec.setdefault("max_stats", {})[stat] = value
 
-    # Last-name initial filter: e.g. last names containing 'M'. The
-    # underlying flag is "contains" not "starts-with", so it's a
-    # broader gate but still recognizably a "last names with M" trivia.
-    if rng.random() < p_initial:
+    # Last-name initial — pinned or maybe random.
+    if overrides.get("last_name_contains"):
+        spec["last_name_contains"] = overrides["last_name_contains"]
+    elif rng.random() < p_initial:
         spec["last_name_contains"] = rng.choice(_LAST_NAME_INITIALS)
+
+    # Pure passthrough for filters with no random equivalent — accept
+    # whatever the user gave and emit it on the spec.
+    for key in (
+        "first_name_contains", "drafted_by",
+        "draft_start", "draft_end",
+        "college", "min_career_stats", "max_career_stats",
+        "tiebreak_by",
+    ):
+        if overrides.get(key):
+            spec[key] = overrides[key]
 
     return spec
 
@@ -1623,20 +1676,47 @@ def _resolve_template(con: duckdb.DuckDBPyConnection, template: dict):
 
 
 def _pick_non_empty_template(
-    con: duckdb.DuckDBPyConnection, rng, *, max_attempts: int = 25
+    con: duckdb.DuckDBPyConnection,
+    rng,
+    *,
+    max_attempts: int = 25,
+    overrides: dict | None = None,
 ) -> tuple[dict, list[dict], int, str, str]:
     """Sample random templates until one yields a non-empty answer
-    set, up to ``max_attempts``. Falls back to a known-good
-    minimum-filter template if every attempt returned empty."""
-    last = None
+    set, up to ``max_attempts``. ``overrides`` (if given) pins
+    user-supplied dimensions for every attempt; the rest stay random.
+
+    Falls back to a known-good minimum-filter template if every attempt
+    returned empty. The fallback also respects user overrides — if the
+    user pinned filters that exclude every player, we keep the pin and
+    surface the empty set rather than silently ignoring the user's
+    request."""
     for _ in range(max_attempts):
-        template = _random_trivia_template(rng)
+        template = _random_trivia_template(rng, overrides)
         answers, n, rank_by, position = _resolve_template(con, template)
         if answers:
             return template, answers, n, rank_by, position
-        last = (template, answers, n, rank_by, position)
-    # Fallback: rank by fpts_ppr across all positions, no other filters.
-    fallback = {"rank_by": "fpts_ppr", "n": 10, "position": "ALL", "unique": True}
+    # Fallback: minimum filters but keep user pins. If overrides
+    # pinned a rank_by / position / n / unique those override the
+    # defaults; otherwise the fallback is "top-10 fpts_ppr, ALL,
+    # unique" — safe across any DB state.
+    overrides = overrides or {}
+    fallback = {
+        "rank_by":  overrides.get("rank_by")  or "fpts_ppr",
+        "n":        overrides.get("n")        or 10,
+        "position": overrides.get("position") or "ALL",
+        "unique":   overrides["unique"] if "unique" in overrides else True,
+    }
+    for key in (
+        "start", "end", "team", "division", "conference",
+        "first_name_contains", "last_name_contains",
+        "has_award", "ever_won_award", "rookie_only",
+        "draft_rounds", "draft_start", "draft_end", "drafted_by",
+        "min_stats", "max_stats", "college",
+        "min_career_stats", "max_career_stats", "tiebreak_by",
+    ):
+        if overrides.get(key):
+            fallback[key] = overrides[key]
     answers, n, rank_by, position = _resolve_template(con, fallback)
     return fallback, answers or [], n, rank_by, position
 
@@ -1704,6 +1784,52 @@ def trivia_daily(
 
 @trivia_app.command("random")
 def trivia_random(
+    # User-pin flags. Same shape as `trivia play`. Anything passed here
+    # becomes a hard constraint; remaining dimensions stay random.
+    rank_by: str | None = typer.Option(
+        None, "--rank-by",
+        help="Pin the rank-by stat. e.g. --rank-by rush_yds for a "
+             "rushing-only random game.",
+    ),
+    n: int | None = typer.Option(None, "--n", help="Pin the top-N count."),
+    position: str | None = typer.Option(
+        None, "--position",
+        help="Pin the position (or alias like FLEX / SAFETY / DB / LB / "
+             "DL / ALL).",
+    ),
+    start: int | None = typer.Option(None, "--start", help="Pin season range start."),
+    end:   int | None = typer.Option(None, "--end",   help="Pin season range end."),
+    team: str | None = typer.Option(None, "--team", help="Pin a team."),
+    division: str | None = typer.Option(None, "--division"),
+    conference: str | None = typer.Option(None, "--conference"),
+    first_name_contains: str | None = typer.Option(None, "--first-name-contains"),
+    last_name_contains: str | None = typer.Option(None, "--last-name-contains"),
+    has_award: list[str] | None = typer.Option(None, "--has-award"),
+    ever_won: list[str] | None = typer.Option(None, "--ever-won"),
+    rookie_only: bool = typer.Option(
+        False, "--rookie-only/--no-rookie-only",
+        help="Pin rookie-only on. (Off-by-default; the random gen may "
+             "still flip it on independently if you don't pass this.)",
+    ),
+    draft_rounds: str | None = typer.Option(
+        None, "--draft-rounds",
+        help='Pin a draft-round bucket — e.g. "1" or "4,5" or '
+             '"undrafted".',
+    ),
+    draft_start: int | None = typer.Option(None, "--draft-start"),
+    draft_end:   int | None = typer.Option(None, "--draft-end"),
+    drafted_by: str | None = typer.Option(None, "--drafted-by"),
+    min_stat: list[str] | None = typer.Option(None, "--min-stat"),
+    max_stat: list[str] | None = typer.Option(None, "--max-stat"),
+    college: str | None = typer.Option(None, "--college"),
+    min_career_stat: list[str] | None = typer.Option(None, "--min-career-stat"),
+    max_career_stat: list[str] | None = typer.Option(None, "--max-career-stat"),
+    unique: bool | None = typer.Option(
+        None, "--unique/--no-unique",
+        help="Pin uniqueness. Default (omit the flag) leaves it as a "
+             "2/3-true random toggle.",
+    ),
+    tiebreak_by: list[str] | None = typer.Option(None, "--tiebreak-by"),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
     seed: int | None = typer.Option(
         None, "--seed",
@@ -1713,23 +1839,81 @@ def trivia_random(
 ) -> None:
     """Random trivia — fresh sampled template every call.
 
-    Samples rank_by, position, year range, optional team/division/
-    conference, optional award filter, rookie-only, and uniqueness
-    independently. Retries up to 12 times to find a non-empty answer
-    set; falls back to top-N by fpts_ppr if everything came up empty.
+    Any flags you pass become hard constraints; the rest stay random.
+    e.g. ``trivia random --start 1970 --end 1990 --team PIT`` produces
+    a random rank-by + filter combination scoped to 1970-1990 Steelers
+    seasons.
+
+    Retries up to 25 attempts to find a non-empty answer set; falls
+    back to a minimum-filter template (with your pins still applied)
+    if everything came up empty.
     """
     import random
+
+    # Parse the few comma/= flags into the shapes the queries layer
+    # expects.
+    rounds_list: list[int | str] | None = None
+    if draft_rounds:
+        rounds_list = []
+        for token in (t.strip() for t in draft_rounds.split(",")):
+            if not token:
+                continue
+            if token.lower() == "undrafted":
+                rounds_list.append("undrafted")
+            else:
+                try:
+                    rounds_list.append(int(token))
+                except ValueError:
+                    typer.echo(
+                        f"--draft-rounds entries must be ints or 'undrafted'; "
+                        f"got {token!r}",
+                        err=True,
+                    )
+                    raise typer.Exit(code=2)
+    min_stats_dict = _parse_stat_pairs(min_stat, "--min-stat")
+    max_stats_dict = _parse_stat_pairs(max_stat, "--max-stat")
+    min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
+    max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
+
+    overrides: dict = {}
+    if rank_by:               overrides["rank_by"]            = rank_by
+    if n is not None:         overrides["n"]                  = n
+    if position:              overrides["position"]           = position
+    if start is not None:     overrides["start"]              = start
+    if end is not None:       overrides["end"]                = end
+    if team:                  overrides["team"]               = team
+    if division:              overrides["division"]           = division
+    if conference:            overrides["conference"]         = conference
+    if first_name_contains:   overrides["first_name_contains"] = first_name_contains
+    if last_name_contains:    overrides["last_name_contains"]  = last_name_contains
+    if has_award:             overrides["has_award"]          = has_award
+    if ever_won:              overrides["ever_won_award"]     = ever_won
+    if rookie_only:           overrides["rookie_only"]        = True
+    if rounds_list:           overrides["draft_rounds"]       = rounds_list
+    if draft_start is not None: overrides["draft_start"]      = draft_start
+    if draft_end is not None:   overrides["draft_end"]        = draft_end
+    if drafted_by:            overrides["drafted_by"]         = drafted_by
+    if min_stats_dict:        overrides["min_stats"]          = min_stats_dict
+    if max_stats_dict:        overrides["max_stats"]          = max_stats_dict
+    if college:               overrides["college"]            = college
+    if min_career_dict:       overrides["min_career_stats"]   = min_career_dict
+    if max_career_dict:       overrides["max_career_stats"]   = max_career_dict
+    if unique is not None:    overrides["unique"]             = unique
+    if tiebreak_by:           overrides["tiebreak_by"]        = tiebreak_by
 
     rng = random.Random(seed)
     con = _open_db(db)
     try:
-        template, answers, n, rank_by, position = _pick_non_empty_template(con, rng)
+        template, answers, n_, rank_by_, position_ = _pick_non_empty_template(
+            con, rng, overrides=overrides if overrides else None,
+        )
     finally:
         con.close()
     if not answers:
         typer.echo("No matching player-seasons for any random template.")
         raise typer.Exit(code=0)
-    _run_template(template, answers, n, rank_by, position, label="random")
+    label = "random with pins" if overrides else "random"
+    _run_template(template, answers, n_, rank_by_, position_, label=label)
 
 
 if __name__ == "__main__":
