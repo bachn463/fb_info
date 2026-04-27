@@ -284,6 +284,69 @@ def test_ask_pos_top_show_awards_appends_column(tmp_path):
     assert "PB" in result.output
 
 
+def test_ask_pos_top_draft_year_range(tmp_path):
+    """--draft-start / --draft-end filter to drafted-in-range players."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    # 1985 PFR fixtures: only 1985 draft entries are in our DB. Most
+    # 1985 players were drafted earlier and have no draft entry.
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "ALL",
+            "--rank-by", "fpts_ppr",
+            "--n", "10",
+            "--draft-start", "1985",
+            "--draft-end", "1985",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Jerry Rice was drafted 1985 R1 P16, played 1985 -> in range.
+    assert "Jerry Rice" in result.output
+    # Walter Payton was drafted 1975 -> out of range.
+    assert "Walter Payton" not in result.output
+
+
+def test_ask_pos_top_ever_won_career_award(tmp_path):
+    """--ever-won returns all seasons of a player who won the award
+    at any point. Test the wiring against synthetic data."""
+    db = tmp_path / "ff.duckdb"
+    con = connect(db)
+    apply_schema(con)
+    con.execute("INSERT INTO players (player_id, name) VALUES "
+                "('p1', 'Career MVP'), ('p2', 'Never MVP')")
+    con.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES "
+        "('p1', 2018, 'KC', 'QB', 300),"
+        "('p1', 2019, 'KC', 'QB', 320),"
+        "('p1', 2020, 'KC', 'QB', 280),"
+        "('p2', 2019, 'BUF', 'QB', 305)"
+    )
+    con.execute(
+        "INSERT INTO player_awards (player_id, season, award_type, vote_finish) "
+        "VALUES ('p1', 2019, 'MVP', 1)"
+    )
+    con.close()
+    result = runner.invoke(
+        app,
+        [
+            "ask", "pos-top",
+            "--position", "QB",
+            "--rank-by", "fpts_ppr",
+            "--n", "10",
+            "--ever-won", "MVP",
+            "--db", str(db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # All three of Career MVP's seasons appear.
+    assert result.output.count("Career MVP") == 3
+    # Never MVP does not.
+    assert "Never MVP" not in result.output
+
+
 def test_show_awards_renders_vote_finish_for_voted_awards(tmp_path):
     """Voted awards display as <type>-<finish> so winners (vote_finish=1)
     are unambiguous vs runners-up. User reported confusion: Cooper Kupp

@@ -187,6 +187,9 @@ def pos_topN(
     rookie_only: bool = False,
     min_stats: dict[str, float] | None = None,
     max_stats: dict[str, float] | None = None,
+    draft_start: int | None = None,
+    draft_end: int | None = None,
+    ever_won_award: list[str] | None = None,
 ) -> tuple[str, list]:
     """Top-N player-seasons at a given position, ranked by ``rank_by``.
 
@@ -242,6 +245,15 @@ def pos_topN(
       as ``rank_by``) so they're safe to interpolate. Useful for
       "top X with at least N rec_yds" or "high-volume RBs with low
       rush_yds" style queries.
+    - ``draft_start`` / ``draft_end``: filter to player-seasons where
+      the player's draft year falls in the given inclusive range.
+      Either bound can be omitted. Excludes undrafted players (their
+      draft_year is NULL).
+    - ``ever_won_award``: list of award_type labels. Filters to player-
+      seasons of players who **at any point in their career** won
+      one of the listed awards — independent of which season we're
+      ranking. Composes with ``has_award`` (year-of-win filter).
+      Same allowlist + win-only semantics as ``has_award``.
 
     Returns rows of (name, team, season, position, rank_value,
     draft_round, draft_year, draft_overall_pick) — column set is
@@ -349,6 +361,37 @@ def pos_topN(
             "season = (SELECT MIN(season) FROM player_season_stats "
             "WHERE player_id = v_player_season_full.player_id)"
         )
+
+    # Draft-year range: drafted players only (drops undrafted).
+    if draft_start is not None:
+        where_clauses.append("draft_year >= ?")
+        params.append(draft_start)
+    if draft_end is not None:
+        where_clauses.append("draft_year <= ?")
+        params.append(draft_end)
+
+    # Career-award filter: player won this award at any season.
+    # Same EXISTS pattern as has_award but without the season match.
+    if ever_won_award:
+        normalized: list[str] = []
+        for a in ever_won_award:
+            label = str(a).upper()
+            if label not in AWARD_TYPES_ALLOWED:
+                raise ValueError(
+                    f"unknown award_type {a!r}; allowed: "
+                    f"{sorted(AWARD_TYPES_ALLOWED)}"
+                )
+            normalized.append(label)
+        placeholders = ",".join(["?"] * len(normalized))
+        where_clauses.append(
+            f"EXISTS ("
+            f"SELECT 1 FROM player_awards pa "
+            f"WHERE  pa.player_id = v_player_season_full.player_id "
+            f"  AND  pa.award_type IN ({placeholders}) "
+            f"  AND  (pa.vote_finish IS NULL OR pa.vote_finish = 1)"
+            f")"
+        )
+        params.extend(normalized)
 
     # Min/max stat thresholds. Column names validated against the
     # same allowlist as rank_by (no SQL injection).

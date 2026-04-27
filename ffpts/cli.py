@@ -207,14 +207,30 @@ def ask_pos_top(
     has_award: list[str] | None = typer.Option(
         None, "--has-award",
         help="Filter to player-seasons where the player won this "
-             "award. Repeatable: --has-award MVP --has-award OROY = "
+             "award *that year*. Repeatable: --has-award MVP --has-award OROY = "
              "MVP OR OROY. Allowed: MVP, OPOY, DPOY, OROY, DROY, "
              "CPOY, WPMOY, PB, AP_FIRST, AP_SECOND.",
+    ),
+    ever_won: list[str] | None = typer.Option(
+        None, "--ever-won",
+        help="Filter to player-seasons of players who won this award "
+             "*at any point in their career*. Repeatable. Composes "
+             "with --has-award. Same allowlist.",
     ),
     rookie_only: bool = typer.Option(
         False, "--rookie-only/--no-rookie-only",
         help="Restrict to each player's first season we have data for "
              "(approximately their rookie year).",
+    ),
+    draft_start: int | None = typer.Option(
+        None, "--draft-start",
+        help="Filter to players drafted in or after this year "
+             "(inclusive). Excludes undrafted players.",
+    ),
+    draft_end: int | None = typer.Option(
+        None, "--draft-end",
+        help="Filter to players drafted in or before this year "
+             "(inclusive). Excludes undrafted players.",
     ),
     min_stat: list[str] | None = typer.Option(
         None, "--min-stat",
@@ -284,7 +300,9 @@ def ask_pos_top(
         last_name_contains=last_name_contains,
         unique=unique,
         has_award=has_award if has_award else None,
+        ever_won_award=ever_won if ever_won else None,
         rookie_only=rookie_only,
+        draft_start=draft_start, draft_end=draft_end,
         min_stats=min_stats_dict if min_stats_dict else None,
         max_stats=max_stats_dict if max_stats_dict else None,
     )
@@ -433,7 +451,10 @@ def trivia_play(
     first_name_contains: str | None = typer.Option(None, "--first-name-contains"),
     last_name_contains: str | None = typer.Option(None, "--last-name-contains"),
     has_award: list[str] | None = typer.Option(None, "--has-award"),
+    ever_won: list[str] | None = typer.Option(None, "--ever-won"),
     rookie_only: bool = typer.Option(False, "--rookie-only/--no-rookie-only"),
+    draft_start: int | None = typer.Option(None, "--draft-start"),
+    draft_end: int | None = typer.Option(None, "--draft-end"),
     min_stat: list[str] | None = typer.Option(None, "--min-stat"),
     max_stat: list[str] | None = typer.Option(None, "--max-stat"),
     unique: bool = typer.Option(
@@ -481,7 +502,9 @@ def trivia_play(
         last_name_contains=last_name_contains,
         unique=unique,
         has_award=has_award if has_award else None,
+        ever_won_award=ever_won if ever_won else None,
         rookie_only=rookie_only,
+        draft_start=draft_start, draft_end=draft_end,
         min_stats=min_stats_dict if min_stats_dict else None,
         max_stats=max_stats_dict if max_stats_dict else None,
     )

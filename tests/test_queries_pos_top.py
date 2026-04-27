@@ -622,6 +622,139 @@ def test_max_stats_unknown_column_raises():
         pos_topN("RB", max_stats={"DROP TABLE": 100})
 
 
+def test_draft_year_range_filter(db):
+    """--draft-start / --draft-end filter player-seasons by the
+    player's draft year."""
+    db.execute("INSERT INTO players (player_id, name) VALUES "
+               "('p1','Old'), ('p2','Mid'), ('p3','New'), ('p4','Undrafted')")
+    db.execute(
+        "INSERT INTO draft_picks (player_id, year, round, overall_pick, team) VALUES "
+        "('p1', 1995, 1, 5, 'DAL'),"
+        "('p2', 2010, 1, 5, 'DAL'),"
+        "('p3', 2020, 1, 5, 'DAL')"
+    )
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES "
+        "('p1', 2000, 'DAL', 'WR', 100),"
+        "('p2', 2015, 'DAL', 'WR', 100),"
+        "('p3', 2021, 'DAL', 'WR', 100),"
+        "('p4', 2010, 'DAL', 'WR', 100)"
+    )
+    sql, params = pos_topN(
+        "WR", n=10, rank_by="fpts_ppr",
+        team="DAL",
+        draft_start=2005, draft_end=2015,
+    )
+    rows = [r[0] for r in db.execute(sql, params).fetchall()]
+    # Only Mid (drafted 2010) qualifies.
+    assert rows == ["Mid"]
+
+
+def test_draft_year_range_excludes_undrafted(db):
+    """Undrafted players have draft_year=NULL; the range filter
+    excludes them."""
+    db.execute("INSERT INTO players (player_id, name) VALUES ('u', 'Undrafted Star')")
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) "
+        "VALUES ('u', 2010, 'DAL', 'WR', 999)"
+    )
+    sql, params = pos_topN(
+        "WR", n=10, rank_by="fpts_ppr",
+        team="DAL",
+        draft_start=1990, draft_end=2024,
+    )
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    assert "Undrafted Star" not in names
+
+
+def test_draft_start_only(db):
+    """Open-ended upper bound — drafted in or after the start year."""
+    db.execute("INSERT INTO players (player_id, name) VALUES ('p1','Pre'), ('p2','Post')")
+    db.execute(
+        "INSERT INTO draft_picks (player_id, year, round, overall_pick, team) VALUES "
+        "('p1', 1990, 1, 1, 'DAL'),"
+        "('p2', 2010, 1, 1, 'DAL')"
+    )
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES "
+        "('p1', 2000, 'DAL', 'WR', 100),"
+        "('p2', 2015, 'DAL', 'WR', 100)"
+    )
+    sql, params = pos_topN("WR", rank_by="fpts_ppr", team="DAL", draft_start=2000)
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    assert names == ["Post"]
+
+
+def test_ever_won_award_returns_all_seasons_of_winner(db):
+    """--ever-won MVP returns every season of an MVP winner, not just
+    the season they won."""
+    db.execute("INSERT INTO players (player_id, name) VALUES ('mvp','MVP Career')")
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES "
+        "('mvp', 2018, 'KC', 'QB', 300),"
+        "('mvp', 2019, 'KC', 'QB', 320),"  # MVP-winning season
+        "('mvp', 2020, 'KC', 'QB', 280),"
+        "('mvp', 2021, 'KC', 'QB', 270)"
+    )
+    db.execute(
+        "INSERT INTO player_awards (player_id, season, award_type, vote_finish) "
+        "VALUES ('mvp', 2019, 'MVP', 1)"
+    )
+    sql, params = pos_topN("QB", n=10, rank_by="fpts_ppr", ever_won_award=["MVP"])
+    seasons = sorted(r[2] for r in db.execute(sql, params).fetchall())
+    # All 4 seasons returned, not just 2019.
+    assert seasons == [2018, 2019, 2020, 2021]
+
+
+def test_ever_won_excludes_non_winners(db):
+    """A QB who never won MVP doesn't show up under --ever-won MVP,
+    even if they got MVP votes."""
+    db.execute("INSERT INTO players (player_id, name) VALUES ('runner','MVP Runner Up')")
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) "
+        "VALUES ('runner', 2019, 'BUF', 'QB', 305)"
+    )
+    db.execute(
+        "INSERT INTO player_awards (player_id, season, award_type, vote_finish) "
+        "VALUES ('runner', 2019, 'MVP', 2)"  # 2nd place, didn't win
+    )
+    sql, params = pos_topN("QB", n=10, rank_by="fpts_ppr", ever_won_award=["MVP"])
+    names = [r[0] for r in db.execute(sql, params).fetchall()]
+    assert "MVP Runner Up" not in names
+
+
+def test_ever_won_combined_with_has_award_year_specific(db):
+    """`--has-award PB --ever-won MVP` = made the Pro Bowl this year
+    AND has won MVP at some point in their career."""
+    db.execute("INSERT INTO players (player_id, name) VALUES "
+               "('a','MVP+PB Same Year'), ('b','PB only'), ('c','MVP elsewhere PB this year')")
+    db.execute(
+        "INSERT INTO player_season_stats (player_id, season, team, position, fpts_ppr) VALUES "
+        "('a', 2019, 'KC', 'QB', 300),"
+        "('b', 2019, 'BUF', 'QB', 280),"
+        "('c', 2019, 'KC', 'QB', 290)"
+    )
+    db.execute(
+        "INSERT INTO player_awards (player_id, season, award_type, vote_finish) VALUES "
+        "('a', 2019, 'MVP', 1),"        # won MVP in 2019
+        "('a', 2019, 'PB', NULL),"
+        "('b', 2019, 'PB', NULL),"      # PB only, never MVP
+        "('c', 2018, 'MVP', 1),"        # won MVP in 2018
+        "('c', 2019, 'PB', NULL)"       # PB this year
+    )
+    sql, params = pos_topN(
+        "QB", n=10, rank_by="fpts_ppr",
+        has_award=["PB"], ever_won_award=["MVP"],
+    )
+    names = {r[0] for r in db.execute(sql, params).fetchall()}
+    assert names == {"MVP+PB Same Year", "MVP elsewhere PB this year"}
+
+
+def test_ever_won_unknown_label_raises():
+    with pytest.raises(ValueError):
+        pos_topN("QB", ever_won_award=["BEST_HAIR"])
+
+
 def test_no_filters_unchanged_column_order_backward_compat(db):
     """Backward-compat sanity: pos_topN with no new filters returns
     the same 8 columns in the same order as before C6."""
