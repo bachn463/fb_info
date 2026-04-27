@@ -383,5 +383,214 @@ def _augment_display(
     return [tuple(r) for r in new_rows], new_cols
 
 
+# ---------------------------------------------------------------------------
+# Trivia
+# ---------------------------------------------------------------------------
+
+trivia_app = typer.Typer(
+    add_completion=False,
+    help="Trivia / fact-recall game built on top of the same query helpers.",
+)
+app.add_typer(trivia_app, name="trivia")
+
+
+@trivia_app.command("play")
+def trivia_play(
+    rank_by: str = typer.Option(
+        "fpts_ppr", "--rank-by", help="Stat column to rank the answer set."
+    ),
+    n: int = typer.Option(10, "--n", help="Number of answers (top-N)."),
+    position: str = typer.Option(
+        "ALL", "--position",
+        help='Position filter. "FLEX" expands to RB/WR/TE; "ALL" disables.',
+    ),
+    start: int | None = typer.Option(None, "--start"),
+    end: int | None = typer.Option(None, "--end"),
+    draft_rounds: str | None = typer.Option(None, "--draft-rounds"),
+    team: str | None = typer.Option(None, "--team"),
+    division: str | None = typer.Option(None, "--division"),
+    conference: str | None = typer.Option(None, "--conference"),
+    first_name_contains: str | None = typer.Option(None, "--first-name-contains"),
+    last_name_contains: str | None = typer.Option(None, "--last-name-contains"),
+    has_award: list[str] | None = typer.Option(None, "--has-award"),
+    rookie_only: bool = typer.Option(False, "--rookie-only/--no-rookie-only"),
+    min_stat: list[str] | None = typer.Option(None, "--min-stat"),
+    max_stat: list[str] | None = typer.Option(None, "--max-stat"),
+    unique: bool = typer.Option(
+        True, "--unique/--no-unique",
+        help="Default ON for trivia: each player counts once. Use "
+             "--no-unique to play with player-seasons (same player can "
+             "appear multiple times for different years).",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+) -> None:
+    """Top-N trivia game. Same filters as `ffpts ask pos-top` plus an
+    interactive guessing loop.
+
+    Type a player name (case-insensitive partial match). Special
+    inputs: ``give up`` to reveal the rest, ``hint`` for a clue,
+    ``quit`` to exit silently.
+    """
+    rounds_list: list[int | str] | None = None
+    if draft_rounds:
+        rounds_list = []
+        for token in (t.strip() for t in draft_rounds.split(",")):
+            if not token:
+                continue
+            if token.lower() == "undrafted":
+                rounds_list.append("undrafted")
+                continue
+            try:
+                rounds_list.append(int(token))
+            except ValueError:
+                typer.echo(
+                    f"--draft-rounds entries must be ints or 'undrafted'; "
+                    f"got {token!r}",
+                    err=True,
+                )
+                raise typer.Exit(code=2)
+
+    min_stats_dict = _parse_stat_pairs(min_stat, "--min-stat")
+    max_stats_dict = _parse_stat_pairs(max_stat, "--max-stat")
+
+    sql, params = pos_topN(
+        position, n=n, rank_by=rank_by,
+        start=start, end=end, draft_rounds=rounds_list,
+        team=team, division=division, conference=conference,
+        first_name_contains=first_name_contains,
+        last_name_contains=last_name_contains,
+        unique=unique,
+        has_award=has_award if has_award else None,
+        rookie_only=rookie_only,
+        min_stats=min_stats_dict if min_stats_dict else None,
+        max_stats=max_stats_dict if max_stats_dict else None,
+    )
+    con = _open_db(db)
+    try:
+        cur = con.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        answers = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        con.close()
+
+    if not answers:
+        typer.echo("No matching player-seasons for those filters; nothing to guess.")
+        raise typer.Exit(code=0)
+
+    _run_trivia_loop(answers, rank_by=rank_by)
+
+
+def _run_trivia_loop(answers: list[dict], *, rank_by: str) -> None:
+    """Interactive REPL. Each answer dict has keys: name, team,
+    season, position, rank_value, draft_round, draft_year,
+    draft_overall_pick.
+    """
+    n = len(answers)
+    found: set[int] = set()
+    guesses = 0
+    hint_cursor = 0
+
+    typer.echo(
+        f"Top {n} player-seasons by {rank_by}. "
+        f"Type a name (substring OK). "
+        f"Commands: `give up`, `hint`, `quit`."
+    )
+
+    while len(found) < n:
+        try:
+            raw = typer.prompt(">>>", prompt_suffix=" ")
+        except (EOFError, KeyboardInterrupt):
+            typer.echo()
+            break
+        guess = raw.strip()
+        if not guess:
+            continue
+        cmd = guess.lower()
+        if cmd == "quit":
+            return
+        if cmd == "give up":
+            _reveal_remaining(answers, found, rank_by=rank_by)
+            typer.echo(
+                f"\nFinal score: {len(found)} / {n} in {guesses} guesses."
+            )
+            return
+        if cmd == "hint":
+            hint_cursor = _print_hint(answers, found, hint_cursor)
+            continue
+
+        guesses += 1
+        matches = _match_guess(guess, answers, found)
+        if not matches:
+            typer.echo(f"  Not in the top {n}.")
+        elif len(matches) > 1:
+            names = ", ".join(answers[i]["name"] for i in matches)
+            typer.echo(
+                f"  Multiple matches ({names}) — be more specific."
+            )
+        else:
+            i = matches[0]
+            found.add(i)
+            row = answers[i]
+            rank = i + 1
+            typer.echo(
+                f"  Correct! #{rank} {row['name']}, {row['season']} "
+                f"({row['team']}, {rank_by}={_fmt_cell(row['rank_value'])})."
+            )
+
+    if len(found) == n:
+        typer.echo(
+            f"\nAll {n} found in {guesses} guesses. Nice."
+        )
+
+
+def _match_guess(guess: str, answers: list[dict], found: set[int]) -> list[int]:
+    """Return indices of unfound answers whose name contains the
+    guess (case-insensitive)."""
+    needle = guess.lower()
+    return [
+        i for i, row in enumerate(answers)
+        if i not in found and needle in (row["name"] or "").lower()
+    ]
+
+
+def _print_hint(answers: list[dict], found: set[int], cursor: int) -> int:
+    """Print a hint about an unfound answer; return advanced cursor."""
+    unfound = [i for i in range(len(answers)) if i not in found]
+    if not unfound:
+        typer.echo("  No hints — you got them all.")
+        return cursor
+    idx = unfound[cursor % len(unfound)]
+    row = answers[idx]
+    rank = idx + 1
+    drafted_in = row.get("draft_year")
+    if drafted_in is not None and row.get("season") is not None:
+        n_year = int(row["season"]) - int(drafted_in) + 1
+        career_hint = f", season #{n_year} of their career"
+    else:
+        career_hint = ""
+    typer.echo(
+        f"  Hint: #{rank} played for {row['team']} in {row['season']} "
+        f"({row.get('position') or 'pos?'}){career_hint}."
+    )
+    return cursor + 1
+
+
+def _reveal_remaining(
+    answers: list[dict], found: set[int], *, rank_by: str
+) -> None:
+    """Print rank/name/team/season/stat for each unfound answer."""
+    unfound = [i for i in range(len(answers)) if i not in found]
+    if not unfound:
+        return
+    typer.echo("\nRemaining:")
+    for i in unfound:
+        row = answers[i]
+        rank = i + 1
+        typer.echo(
+            f"  #{rank}: {row['name']} ({row['team']} {row['season']}, "
+            f"{rank_by}={_fmt_cell(row['rank_value'])})"
+        )
+
+
 if __name__ == "__main__":
     app()
