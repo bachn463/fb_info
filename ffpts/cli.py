@@ -541,10 +541,104 @@ def trivia_play(
         typer.echo("No matching player-seasons for those filters; nothing to guess.")
         raise typer.Exit(code=0)
 
-    _run_trivia_loop(answers, rank_by=rank_by)
+    title = _build_trivia_title(
+        n=n, rank_by=rank_by, position=position,
+        start=start, end=end,
+        team=team, division=division, conference=conference,
+        first_name_contains=first_name_contains,
+        last_name_contains=last_name_contains,
+        has_award=has_award, ever_won=ever_won,
+        rookie_only=rookie_only,
+        draft_start=draft_start, draft_end=draft_end,
+        drafted_by=drafted_by, draft_rounds=rounds_list,
+        min_stats=min_stats_dict, max_stats=max_stats_dict,
+        unique=unique,
+    )
+    _run_trivia_loop(answers, rank_by=rank_by, title=title)
 
 
-def _run_trivia_loop(answers: list[dict], *, rank_by: str) -> None:
+def _build_trivia_title(
+    *, n: int, rank_by: str, position: str,
+    start: int | None, end: int | None,
+    team: str | None, division: str | None, conference: str | None,
+    first_name_contains: str | None, last_name_contains: str | None,
+    has_award: list[str] | None, ever_won: list[str] | None,
+    rookie_only: bool,
+    draft_start: int | None, draft_end: int | None,
+    drafted_by: str | None, draft_rounds: list | None,
+    min_stats: dict | None, max_stats: dict | None,
+    unique: bool,
+) -> str:
+    """Render a one-line description of the active trivia query so
+    users know what they're guessing at game start and at exit."""
+    pos = (position or "").upper()
+    pos_part = "" if pos in ("", "ALL") else f"{pos} "
+
+    if start and end:
+        years = f" ({start}-{end})"
+    elif start:
+        years = f" ({start}+)"
+    elif end:
+        years = f" (through {end})"
+    else:
+        years = ""
+
+    head = f"Top {n} {pos_part}player-seasons by {rank_by}{years}"
+
+    clauses: list[str] = []
+    scope = []
+    if team:
+        scope.append(team.upper())
+    if division:
+        scope.append(division)
+    if conference:
+        scope.append(conference.upper())
+    if scope:
+        clauses.append("from " + " / ".join(scope))
+
+    if has_award:
+        clauses.append(f"with award {'/'.join(has_award)} that season")
+    if ever_won:
+        clauses.append(f"who ever won {'/'.join(ever_won)}")
+    if rookie_only:
+        clauses.append("rookie season only")
+
+    if drafted_by:
+        clauses.append(f"drafted by {drafted_by.upper()}")
+    if draft_start and draft_end:
+        clauses.append(f"drafted {draft_start}-{draft_end}")
+    elif draft_start:
+        clauses.append(f"drafted {draft_start}+")
+    elif draft_end:
+        clauses.append(f"drafted through {draft_end}")
+    if draft_rounds:
+        clauses.append(
+            f"draft rounds {','.join(str(r) for r in draft_rounds)}"
+        )
+
+    if min_stats:
+        for k, v in min_stats.items():
+            clauses.append(f"{k} >= {_fmt_cell(v)}")
+    if max_stats:
+        for k, v in max_stats.items():
+            clauses.append(f"{k} <= {_fmt_cell(v)}")
+
+    if first_name_contains:
+        clauses.append(f"first name contains '{first_name_contains}'")
+    if last_name_contains:
+        clauses.append(f"last name contains '{last_name_contains}'")
+
+    if not unique:
+        clauses.append("multi-season per player allowed")
+
+    if clauses:
+        return head + ", " + ", ".join(clauses)
+    return head
+
+
+def _run_trivia_loop(
+    answers: list[dict], *, rank_by: str, title: str
+) -> None:
     """Interactive REPL. Each answer dict has keys: name, team,
     season, position, rank_value, draft_round, draft_year,
     draft_overall_pick.
@@ -553,11 +647,12 @@ def _run_trivia_loop(answers: list[dict], *, rank_by: str) -> None:
     found: set[int] = set()
     guesses = 0
     hint_cursor = 0
+    hint_levels: dict[int, int] = {}
 
+    typer.echo(title)
     typer.echo(
-        f"Top {n} player-seasons by {rank_by}. "
-        f"Type a name (substring OK). "
-        f"Commands: `give up`, `hint`, `quit`."
+        "Type a name (substring OK). "
+        "Commands: `give up`, `hint`, `quit`."
     )
 
     while len(found) < n:
@@ -571,19 +666,25 @@ def _run_trivia_loop(answers: list[dict], *, rank_by: str) -> None:
             continue
         cmd = guess.lower()
         if cmd == "quit":
-            _print_final_ranked_list(answers, found, rank_by=rank_by)
+            _print_final_ranked_list(
+                answers, found, rank_by=rank_by, title=title
+            )
             typer.echo(
                 f"\nFinal score: {len(found)} / {n} in {guesses} guesses."
             )
             return
         if cmd == "give up":
-            _print_final_ranked_list(answers, found, rank_by=rank_by)
+            _print_final_ranked_list(
+                answers, found, rank_by=rank_by, title=title
+            )
             typer.echo(
                 f"\nFinal score: {len(found)} / {n} in {guesses} guesses."
             )
             return
         if cmd == "hint":
-            hint_cursor = _print_hint(answers, found, hint_cursor)
+            hint_cursor = _print_hint(
+                answers, found, hint_cursor, hint_levels, rank_by=rank_by
+            )
             continue
 
         guesses += 1
@@ -591,9 +692,9 @@ def _run_trivia_loop(answers: list[dict], *, rank_by: str) -> None:
         if not matches:
             typer.echo(f"  Not in the top {n}.")
         elif len(matches) > 1:
-            names = ", ".join(answers[i]["name"] for i in matches)
             typer.echo(
-                f"  Multiple matches ({names}) — be more specific."
+                f"  Ambiguous — matches {len(matches)} answers. "
+                "Be more specific."
             )
         else:
             i = matches[0]
@@ -607,7 +708,7 @@ def _run_trivia_loop(answers: list[dict], *, rank_by: str) -> None:
 
     # Loop exited (either all found, or stdin closed). Print the full
     # ranked list either way so the user always leaves with the answers.
-    _print_final_ranked_list(answers, found, rank_by=rank_by)
+    _print_final_ranked_list(answers, found, rank_by=rank_by, title=title)
     if len(found) == n:
         typer.echo(
             f"\nAll {n} found in {guesses} guesses. Nice."
@@ -628,37 +729,76 @@ def _match_guess(guess: str, answers: list[dict], found: set[int]) -> list[int]:
     ]
 
 
-def _print_hint(answers: list[dict], found: set[int], cursor: int) -> int:
-    """Print a hint about an unfound answer; return advanced cursor."""
+def _hint_layers(row: dict, *, rank_by: str) -> list[str]:
+    """Ordered list of hint reveals for a single answer row. Each
+    successive call to ``hint`` on the same row reveals one more
+    layer."""
+    layers: list[str] = []
+    layers.append(f"team {row.get('team') or '?'}")
+    layers.append(f"year {row.get('season') or '?'}")
+    layers.append(f"position {row.get('position') or '?'}")
+    dy = row.get("draft_year")
+    s = row.get("season")
+    if dy is not None and s is not None:
+        layers.append(f"season #{int(s) - int(dy) + 1} of career")
+    else:
+        layers.append("career year unknown")
+    layers.append(f"{rank_by}={_fmt_cell(row.get('rank_value'))}")
+    dr = row.get("draft_round")
+    if dr is not None and dy is not None:
+        layers.append(f"drafted round {dr} in {dy}")
+    elif dr is not None:
+        layers.append(f"drafted round {dr}")
+    else:
+        layers.append("undrafted")
+    name = row.get("name") or ""
+    last = name.split()[-1] if name else ""
+    if last:
+        layers.append(f"last name starts with '{last[0].upper()}'")
+    return layers
+
+
+def _print_hint(
+    answers: list[dict],
+    found: set[int],
+    cursor: int,
+    hint_levels: dict[int, int],
+    *,
+    rank_by: str,
+) -> int:
+    """Print a progressive hint about an unfound answer.
+
+    Cursor cycles through unfound answers. Each time we re-land on the
+    same player (after wrapping), the level for that player advances
+    and one more layer is revealed (team, then year, then position,
+    then career-year, then ranking-stat value, then draft round/year,
+    then last-name initial).
+    """
     unfound = [i for i in range(len(answers)) if i not in found]
     if not unfound:
         typer.echo("  No hints — you got them all.")
         return cursor
     idx = unfound[cursor % len(unfound)]
-    row = answers[idx]
+    level = hint_levels.get(idx, 0) + 1
+    layers = _hint_layers(answers[idx], rank_by=rank_by)
+    capped = min(level, len(layers))
+    hint_levels[idx] = capped
     rank = idx + 1
-    drafted_in = row.get("draft_year")
-    if drafted_in is not None and row.get("season") is not None:
-        n_year = int(row["season"]) - int(drafted_in) + 1
-        career_hint = f", season #{n_year} of their career"
-    else:
-        career_hint = ""
     typer.echo(
-        f"  Hint: #{rank} played for {row['team']} in {row['season']} "
-        f"({row.get('position') or 'pos?'}){career_hint}."
+        f"  Hint #{capped} for #{rank}: " + ", ".join(layers[:capped])
     )
     return cursor + 1
 
 
 def _print_final_ranked_list(
-    answers: list[dict], found: set[int], *, rank_by: str
+    answers: list[dict], found: set[int], *, rank_by: str, title: str
 ) -> None:
     """Print the full ranked answer list with a marker per row showing
     whether the user found it (✓) or not (✗). Called on every trivia
     exit path so the user always leaves with the answers."""
     if not answers:
         return
-    typer.echo("\nFinal ranked list:")
+    typer.echo(f"\nFinal ranked list — {title}:")
     for i, row in enumerate(answers):
         marker = "✓" if i in found else "✗"
         rank = i + 1

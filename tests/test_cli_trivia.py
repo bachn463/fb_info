@@ -81,7 +81,7 @@ def test_trivia_give_up_prints_full_ranked_list(tmp_path):
         input="give up\n",
     )
     assert result.exit_code == 0, result.output
-    assert "Final ranked list:" in result.output
+    assert "Final ranked list —" in result.output
     # Marcus Allen led the league in 1985 with 1759 rush yds.
     assert "Marcus Allen" in result.output
     assert "Final score:" in result.output
@@ -105,7 +105,7 @@ def test_trivia_quit_also_prints_full_ranked_list(tmp_path):
         input="quit\n",
     )
     assert result.exit_code == 0, result.output
-    assert "Final ranked list:" in result.output
+    assert "Final ranked list —" in result.output
     assert "Marcus Allen" in result.output
     assert "Final score: 0 / 3" in result.output
 
@@ -129,7 +129,7 @@ def test_trivia_full_finish_prints_full_ranked_list(tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert "All 3 found" in result.output
-    assert "Final ranked list:" in result.output
+    assert "Final ranked list —" in result.output
     # All three names listed with the ✓ marker.
     assert "✓" in result.output
     assert "Marcus Allen" in result.output
@@ -154,7 +154,7 @@ def test_trivia_partial_score_marks_unfound_with_x(tmp_path):
         input="marcus allen\ngive up\n",
     )
     assert result.exit_code == 0, result.output
-    assert "Final ranked list:" in result.output
+    assert "Final ranked list —" in result.output
     # Found marker (Marcus Allen) and missed marker (others).
     assert "✓" in result.output
     assert "✗" in result.output
@@ -177,7 +177,7 @@ def test_trivia_hint_prints_clue(tmp_path):
         input="hint\nquit\n",
     )
     assert result.exit_code == 0, result.output
-    assert "Hint:" in result.output
+    assert "Hint #1" in result.output
 
 
 def test_trivia_complete_game_succeeds(tmp_path):
@@ -240,6 +240,86 @@ def test_trivia_empty_input_does_not_crash(tmp_path):
         input="\n\nquit\n",
     )
     assert result.exit_code == 0, result.output
+
+
+def test_trivia_title_describes_query_at_start_and_end(tmp_path):
+    """The descriptive title appears at game start AND with the final
+    ranked list at exit, including pos/year/scope info from the
+    filters."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "trivia", "play",
+            "--rank-by", "rush_yds",
+            "--n", "3",
+            "--position", "RB",
+            "--start", "1985", "--end", "1985",
+            "--db", str(db),
+        ],
+        input="quit\n",
+    )
+    assert result.exit_code == 0, result.output
+    # Title fragments must appear (twice — opener + final list header).
+    assert "Top 3 RB player-seasons by rush_yds (1985-1985)" in result.output
+    assert "Final ranked list — Top 3 RB" in result.output
+
+
+def test_trivia_title_includes_award_and_scope_clauses(tmp_path):
+    """has-award + conference filters should surface in the title."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        [
+            "trivia", "play",
+            "--rank-by", "rush_yds",
+            "--n", "3",
+            "--position", "RB",
+            "--start", "1985", "--end", "1985",
+            "--has-award", "PB",
+            "--db", str(db),
+        ],
+        input="quit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "with award PB that season" in result.output
+
+
+def test_trivia_hint_progressive_levels(tmp_path):
+    """Calling `hint` repeatedly cycles through unfound players, and
+    when it lands on the same player a second time it reveals one
+    more layer than the first time."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    # n=1 means every `hint` lands on the same single answer, so each
+    # call advances its level and reveals one more layer.
+    result = runner.invoke(
+        app,
+        [
+            "trivia", "play",
+            "--rank-by", "rush_yds",
+            "--n", "1",
+            "--position", "RB",
+            "--start", "1985", "--end", "1985",
+            "--db", str(db),
+        ],
+        input="hint\nhint\nhint\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Hint #1 for #1:" in result.output
+    assert "Hint #2 for #1:" in result.output
+    assert "Hint #3 for #1:" in result.output
+    # Level 1 reveals only team. Level 2 reveals team + year. Level 3
+    # adds position. So #2 must contain "year" and #3 must contain
+    # "position", but #1 must NOT contain "year".
+    h1_line = next(l for l in result.output.splitlines() if "Hint #1 for #1:" in l)
+    h2_line = next(l for l in result.output.splitlines() if "Hint #2 for #1:" in l)
+    h3_line = next(l for l in result.output.splitlines() if "Hint #3 for #1:" in l)
+    assert "team" in h1_line and "year" not in h1_line
+    assert "team" in h2_line and "year" in h2_line
+    assert "position" in h3_line
 
 
 def test_trivia_help_lists_command():
