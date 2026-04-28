@@ -239,6 +239,67 @@ def test_pipeline_applies_college_override_for_supp_pick():
         )
 
 
+def test_career_topN_draft_rounds_filter(db):
+    """The draft_rounds filter should restrict the player pool. Round
+    1 includes high picks; combined with rank by pass_yds we expect
+    to find Bryce Young (2023 #1 overall)."""
+    sql, params = career_topN("pass_yds", n=20, draft_rounds=[1])
+    rows = db.execute(sql, params).fetchall()
+    names = {r[0] for r in rows}
+    # 2023 fixture has 1st-round QBs Bryce Young and CJ Stroud.
+    assert "Bryce Young" in names or "C.J. Stroud" in names
+
+
+def test_career_topN_draft_rounds_undrafted(db):
+    """draft_rounds=['undrafted'] should match players with no
+    draft_picks row (their LEFT JOIN yields d.round IS NULL)."""
+    sql, params = career_topN("rush_yds", n=20, draft_rounds=["undrafted"])
+    rows = db.execute(sql, params).fetchall()
+    # Just sanity — query runs and returns rows of the expected shape.
+    cols = [d[0] for d in db.execute(sql, params).description]
+    assert "career_total" in cols
+
+
+def test_career_topN_drafted_by_filter(db):
+    """drafted_by should restrict to players drafted by that team."""
+    sql, params = career_topN("pass_yds", n=20, drafted_by="CAR")
+    rows = db.execute(sql, params).fetchall()
+    # 2023 #1 overall (Bryce Young) was a CAR pick.
+    names = {r[0] for r in rows}
+    assert "Bryce Young" in names
+
+
+def test_career_topN_first_name_contains_filter(db):
+    """First-name substring match should narrow the leaderboard."""
+    sql, params = career_topN(
+        "pass_yds", n=20, first_name_contains="Bryce",
+    )
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    # Every returned player should have a first name containing "Bryce".
+    for name in names:
+        first = name.split()[0]
+        assert "bryce" in first.lower(), f"unexpected first name {first}"
+
+
+def test_career_topN_last_name_contains_filter(db):
+    """Last-name substring match should narrow the leaderboard."""
+    sql, params = career_topN(
+        "pass_yds", n=20, last_name_contains="Young",
+    )
+    rows = db.execute(sql, params).fetchall()
+    names = [r[0] for r in rows]
+    for name in names:
+        # everything after the first space
+        last = name.split(" ", 1)[1] if " " in name else ""
+        assert "young" in last.lower(), f"last name doesn't contain Young: {name}"
+
+
+def test_career_topN_draft_rounds_invalid_entry_raises(db):
+    with pytest.raises(ValueError, match="draft_rounds"):
+        career_topN("pass_yds", n=10, draft_rounds=[1.5])  # type: ignore[arg-type]
+
+
 def test_pos_topN_college_substring_match_handles_transfer_list(db):
     """A player with a comma-list college value should match an
     ILIKE substring filter for any of the listed schools. Synthetic

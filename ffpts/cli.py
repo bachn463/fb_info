@@ -1032,6 +1032,24 @@ def ask_career(
              '"--max-career-stat def_int=30" for safeties with under '
              "30 career interceptions.",
     ),
+    draft_rounds: str | None = typer.Option(
+        None, "--draft-rounds",
+        help='Comma-separated draft rounds and/or "undrafted". '
+             "Filters to players whose draft pick fell in any of these "
+             "rounds. Same shape as `ask pos-top --draft-rounds`.",
+    ),
+    drafted_by: str | None = typer.Option(
+        None, "--drafted-by",
+        help="Filter to players drafted by this team code (e.g. 'PIT').",
+    ),
+    first_name_contains: str | None = typer.Option(
+        None, "--first-name-contains",
+        help="Case-insensitive substring match on first name.",
+    ),
+    last_name_contains: str | None = typer.Option(
+        None, "--last-name-contains",
+        help="Case-insensitive substring match on last name.",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
 ) -> None:
     """Top-N players by *career-total* of --rank-by.
@@ -1040,6 +1058,24 @@ def ask_career(
     Career totals are summed across the seasons that match the
     optional filters, then ranked.
     """
+    rounds_list: list[int | str] | None = None
+    if draft_rounds:
+        rounds_list = []
+        for token in (t.strip() for t in draft_rounds.split(",")):
+            if not token:
+                continue
+            if token.lower() == "undrafted":
+                rounds_list.append("undrafted")
+            else:
+                try:
+                    rounds_list.append(int(token))
+                except ValueError:
+                    typer.echo(
+                        f"--draft-rounds entries must be ints or 'undrafted'; "
+                        f"got {token!r}",
+                        err=True,
+                    )
+                    raise typer.Exit(code=2)
     min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
     max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
     sql, params = career_topN(
@@ -1050,6 +1086,10 @@ def ask_career(
         college=college,
         min_career_stats=min_career_dict if min_career_dict else None,
         max_career_stats=max_career_dict if max_career_dict else None,
+        draft_rounds=rounds_list,
+        drafted_by=drafted_by,
+        first_name_contains=first_name_contains,
+        last_name_contains=last_name_contains,
     )
     con = _open_db(db)
     try:
@@ -1538,8 +1578,22 @@ def _random_trivia_template(
     # ``--mode career`` (or season) skips the roll. Career mode is
     # implicitly unique-by-player so the unique flag is ignored when
     # mode == career.
+    #
+    # If the user pinned any single-season-only filter (team /
+    # division / conference / has_award / rookie_only / min_stats /
+    # max_stats / draft_start / draft_end / tiebreak_by) we force
+    # season mode — career_topN doesn't accept those filters and
+    # silently dropping a user pin would be confusing. Explicit
+    # ``--mode career`` still wins over this auto-fallback.
+    _SEASON_ONLY = (
+        "team", "division", "conference", "has_award", "rookie_only",
+        "min_stats", "max_stats", "draft_start", "draft_end",
+        "tiebreak_by",
+    )
     if "mode" in overrides:
         mode = overrides["mode"]
+    elif any(overrides.get(k) for k in _SEASON_ONLY):
+        mode = "season"
     else:
         mode = "career" if rng.random() < 0.25 else "season"
 
@@ -1713,6 +1767,29 @@ def _random_trivia_template(
         if rng.random() < (0.30 if is_off else 0.20):
             spec["min_seasons"] = rng.choice([3, 5, 8])
 
+        # Draft-round bucket. Player attribute, composes fine with
+        # career SUMs.
+        if overrides.get("draft_rounds"):
+            spec["draft_rounds"] = list(overrides["draft_rounds"])
+        elif rng.random() < p_draft_rd:
+            spec["draft_rounds"] = list(rng.choice(_RANDOM_DRAFT_ROUNDS))
+
+        # Drafted-by team — pinned only (no random pick — too narrow
+        # when combined with all the other career filters; user can
+        # always pin it explicitly).
+        if overrides.get("drafted_by"):
+            spec["drafted_by"] = overrides["drafted_by"]
+
+        # Last-name initial — same random toggle as season mode.
+        if overrides.get("last_name_contains"):
+            spec["last_name_contains"] = overrides["last_name_contains"]
+        elif rng.random() < p_initial:
+            spec["last_name_contains"] = rng.choice(_LAST_NAME_INITIALS)
+
+        # First-name pin passes straight through.
+        if overrides.get("first_name_contains"):
+            spec["first_name_contains"] = overrides["first_name_contains"]
+
     # College — applies to both modes (career_topN added it earlier).
     if overrides.get("college"):
         spec["college"] = overrides["college"]
@@ -1723,6 +1800,9 @@ def _random_trivia_template(
 _CAREER_TOPN_KEYS = {
     "start", "end", "ever_won_award", "min_seasons", "college",
     "min_career_stats", "max_career_stats",
+    # Player-attribute filters that compose with career queries.
+    "draft_rounds", "drafted_by",
+    "first_name_contains", "last_name_contains",
 }
 
 
@@ -1790,6 +1870,31 @@ def _normalize_career_row(row: dict) -> dict:
     }
 
 
+def _is_quality_answer_set(answers: list[dict] | None, n: int) -> bool:
+    """A trivia answer set is "good" only if every spot is filled with
+    a meaningful (non-zero) rank value:
+
+      - len(answers) >= n  (we asked for top N; need at least N rows)
+      - every row's rank_value > 0  (a 0-rush_yds RB shouldn't be on a
+        rushing leaderboard; it means the filter set is broader than
+        the actual eligible pool and we backfilled with zeros)
+
+    Both checks short-circuit the random gen's retry loop so we
+    re-roll until we find a satisfying template."""
+    if not answers or len(answers) < n:
+        return False
+    for row in answers:
+        v = row.get("rank_value")
+        if v is None:
+            return False
+        try:
+            if float(v) <= 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 def _pick_non_empty_template(
     con: duckdb.DuckDBPyConnection,
     rng,
@@ -1797,19 +1902,19 @@ def _pick_non_empty_template(
     max_attempts: int = 25,
     overrides: dict | None = None,
 ) -> tuple[dict, list[dict], int, str, str]:
-    """Sample random templates until one yields a non-empty answer
-    set, up to ``max_attempts``. ``overrides`` (if given) pins
-    user-supplied dimensions for every attempt; the rest stay random.
+    """Sample random templates until one yields a quality answer set
+    (>= N rows, all with positive rank_value), up to ``max_attempts``.
+    ``overrides`` (if given) pins user-supplied dimensions for every
+    attempt; the rest stay random.
 
-    Falls back to a known-good minimum-filter template if every attempt
-    returned empty. The fallback also respects user overrides — if the
-    user pinned filters that exclude every player, we keep the pin and
-    surface the empty set rather than silently ignoring the user's
-    request."""
+    Falls back to a minimum-filter template if every attempt failed
+    the quality check — the fallback also respects user overrides so
+    a too-restrictive pin surfaces the empty/short result rather than
+    silently being ignored."""
     for _ in range(max_attempts):
         template = _random_trivia_template(rng, overrides)
         answers, n, rank_by, position = _resolve_template(con, template)
-        if answers:
+        if _is_quality_answer_set(answers, n):
             return template, answers, n, rank_by, position
     # Fallback: minimum filters but keep user pins. If overrides
     # pinned a rank_by / position / n / unique those override the

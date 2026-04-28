@@ -634,6 +634,144 @@ def test_trivia_random_invalid_mode_errors(tmp_path):
     assert r.exit_code == 2
 
 
+def test_trivia_random_season_only_pin_forces_season(tmp_path):
+    """If the user pins a single-season-only filter (team / division /
+    conference / has_award / rookie_only / etc.) the random gen must
+    NOT pick career mode — career_topN doesn't accept those filters
+    so silently dropping the user pin would be wrong. Sweep enough
+    seeds to cover the auto-fallback's coverage."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    for seed in range(20):
+        r = runner.invoke(
+            app,
+            ["trivia", "random", "--seed", str(seed),
+             "--team", "PIT",
+             "--start", "1985", "--end", "1985",
+             "--db", str(db)],
+            input="quit\n",
+        )
+        assert r.exit_code == 0, r.output
+        title = next(
+            (l for l in r.output.splitlines() if l.startswith("Top ")), None,
+        )
+        assert title is not None
+        # team pin must force season mode.
+        assert " player-seasons by " in title, (
+            f"seed {seed}: expected season mode, got {title}"
+        )
+        assert "from PIT" in title
+
+
+def test_trivia_random_explicit_career_mode_overrides_season_pin(tmp_path):
+    """If the user explicitly pins --mode career, the auto-fallback
+    is skipped even when they also pinned a season-only filter — the
+    season-only pin gets silently dropped (career mode can't honor it)
+    but the user told us they wanted career, so we obey."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    r = runner.invoke(
+        app,
+        ["trivia", "random", "--seed", "1",
+         "--mode", "career",
+         "--team", "PIT",
+         "--rank-by", "rush_yds",
+         "--db", str(db)],
+        input="quit\n",
+    )
+    assert r.exit_code == 0, r.output
+    title = next(
+        (l for l in r.output.splitlines() if l.startswith("Top ")), None,
+    )
+    assert title is not None
+    assert " career-totals by rush_yds" in title
+
+
+def test_cli_ask_career_with_player_attribute_filters(tmp_path):
+    """ask career should accept --draft-rounds, --drafted-by,
+    --first-name-contains, --last-name-contains."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        ["ask", "career",
+         "--rank-by", "pass_yds",
+         "--draft-rounds", "1",
+         "--drafted-by", "CAR",
+         "--last-name-contains", "Young",
+         "--n", "5",
+         "--db", str(db)],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_is_quality_answer_set_unit():
+    """Unit test for the quality predicate: rejects short sets, sets
+    with zero rank values, sets with NULL rank values."""
+    from ffpts.cli import _is_quality_answer_set
+
+    full = [{"rank_value": 100}, {"rank_value": 50}, {"rank_value": 1}]
+    assert _is_quality_answer_set(full, n=3)
+    assert not _is_quality_answer_set(full, n=4)        # too few rows
+    assert not _is_quality_answer_set(full[:2], n=3)
+    assert not _is_quality_answer_set(None, n=3)
+    assert not _is_quality_answer_set([], n=3)
+    # Any zero or NULL disqualifies.
+    assert not _is_quality_answer_set(
+        [{"rank_value": 100}, {"rank_value": 0}, {"rank_value": 50}], n=3,
+    )
+    assert not _is_quality_answer_set(
+        [{"rank_value": 100}, {"rank_value": None}, {"rank_value": 50}], n=3,
+    )
+    # Negative also rejected (can't think of a real case but defensive).
+    assert not _is_quality_answer_set([{"rank_value": -5}], n=1)
+
+
+def test_trivia_random_skips_template_with_zero_rank_value(tmp_path):
+    """Across many seeds, no random trivia game should serve up a
+    leaderboard with any rank_value of 0 — the quality gate forces a
+    re-roll."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    for seed in range(30):
+        r = runner.invoke(
+            app, ["trivia", "random", "--seed", str(seed), "--db", str(db)],
+            input="give up\n",
+        )
+        assert r.exit_code == 0, r.output
+        # The final ranked list lines look like:
+        #   "  ✗ #3: Walter Payton (CHI 1985, rush_yds=1551)"
+        # We grep for the "=0)" / "=0.00)" suffix that would indicate
+        # a zero rank_value made it through.
+        for line in r.output.splitlines():
+            if "✓" in line or "✗" in line:
+                assert "=0)" not in line and "=0.00)" not in line, (
+                    f"seed {seed}: zero rank_value leaked into final list: {line}"
+                )
+
+
+def test_trivia_random_skips_template_with_too_few_rows(tmp_path):
+    """If the user pins a 1985-only window with --n 50 (way more than
+    the fixture has) the gate should keep retrying until the fallback
+    path. The fallback returns whatever rows are available without
+    re-checking quality, so the eventual game may still have <50, but
+    the random gen tried to avoid it."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    # Sanity check that the gate doesn't crash on "asked for too many,
+    # got fewer" — the fallback path takes over and the game runs.
+    r = runner.invoke(
+        app,
+        ["trivia", "random", "--seed", "1",
+         "--start", "1985", "--end", "1985",
+         "--rank-by", "rush_yds",
+         "--n", "200",
+         "--db", str(db)],
+        input="quit\n",
+    )
+    assert r.exit_code == 0, r.output
+
+
 def test_trivia_random_career_some_seed_lands_naturally(tmp_path):
     """Without pinning, ~25% of seeds should land in career mode.
     Sweep enough seeds to make a non-flaky assertion that the random

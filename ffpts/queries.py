@@ -625,6 +625,12 @@ def career_topN(
     college: str | None = None,
     min_career_stats: dict[str, float] | None = None,
     max_career_stats: dict[str, float] | None = None,
+    # Player-attribute filters (independent of single-season state) —
+    # all defaulted to no-op for backward compat.
+    draft_rounds: list[int | str] | None = None,
+    drafted_by: str | None = None,
+    first_name_contains: str | None = None,
+    last_name_contains: str | None = None,
 ) -> tuple[str, list]:
     """Top-N players by *career-total* of ``rank_by`` summed across the
     seasons matching the (optional) filters.
@@ -699,6 +705,47 @@ def career_topN(
     if college:
         where.append("d.college ILIKE ?")
         params.append(f"%{college}%")
+
+    # Draft-round bucket — matches pos_topN's semantics. The special
+    # token "undrafted" means d.draft_round IS NULL (no draft row at
+    # all, so the LEFT JOIN yielded all-NULL).
+    if draft_rounds:
+        int_rounds: list[int] = []
+        include_undrafted = False
+        for entry in draft_rounds:
+            if isinstance(entry, str) and entry.lower() == "undrafted":
+                include_undrafted = True
+            elif isinstance(entry, int) and not isinstance(entry, bool):
+                int_rounds.append(entry)
+            else:
+                raise ValueError(
+                    f"draft_rounds entries must be ints or 'undrafted', got: {entry!r}"
+                )
+        clauses: list[str] = []
+        if int_rounds:
+            ph = ",".join(["?"] * len(int_rounds))
+            clauses.append(f"d.round IN ({ph})")
+            params.extend(int_rounds)
+        if include_undrafted:
+            clauses.append("d.round IS NULL")
+        if clauses:
+            where.append("(" + " OR ".join(clauses) + ")")
+
+    # Drafted-by — filters to players whose draft team matches.
+    # Excludes undrafted players by definition (NULL d.team).
+    if drafted_by:
+        where.append("d.team = ?")
+        params.append(drafted_by.upper())
+
+    # Name greps — same split-on-first-space convention as pos_topN.
+    if first_name_contains:
+        where.append("split_part(p.name, ' ', 1) ILIKE ?")
+        params.append(f"%{first_name_contains}%")
+    if last_name_contains:
+        where.append(
+            "trim(substr(p.name, length(split_part(p.name, ' ', 1)) + 1)) ILIKE ?"
+        )
+        params.append(f"%{last_name_contains}%")
 
     # Career stat min/max thresholds — same HAVING-style subquery as
     # pos_topN. Goes through the same helper so ratio stats recompute
