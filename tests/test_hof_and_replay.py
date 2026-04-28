@@ -102,14 +102,16 @@ def test_ask_career_ever_won_hof(tmp_path):
     assert "Steve Young" in result.output or "career_total" in result.output
 
 
-def test_ask_awards_top_hof_lists_inductees(tmp_path):
-    """`awards-top --award HOF` should list every HOFer (all tied at
-    award_count=1 since each gets exactly one HOF row)."""
+def test_ask_career_award_hof_lists_inductees(tmp_path):
+    """`ask career --award HOF` should list every HOFer (all tied at
+    award_count=1 since each gets exactly one HOF row).
+
+    This is the consolidated home of what used to be `awards-top`."""
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
     result = runner.invoke(
         app,
-        ["ask", "awards-top", "--award", "HOF", "--n", "20",
+        ["ask", "career", "--award", "HOF", "--n", "20",
          "--db", str(db)],
     )
     assert result.exit_code == 0, result.output

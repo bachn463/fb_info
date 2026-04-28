@@ -73,56 +73,6 @@ def test_build_command_validates_year_order(tmp_path):
     assert "must be <=" in result.output
 
 
-# --- ask flex-top -------------------------------------------------------
-
-
-def test_ask_flex_top_jerry_rice_round_1(tmp_path):
-    """1985 R1 P16 SFO Jerry Rice is the only FLEX (RB/WR/TE) drafted
-    in round 1 in our 1985 fixture set — other R1 picks were
-    non-FLEX (DE/G/DT/OL)."""
-    db = tmp_path / "ff.duckdb"
-    _populated_db(db)
-    result = runner.invoke(
-        app,
-        [
-            "ask", "flex-top",
-            "--round", "1",
-            "--n", "10",
-            "--scoring", "ppr",
-            "--db", str(db),
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert "Jerry Rice" in result.output
-
-
-# --- ask div-int --------------------------------------------------------
-
-
-def test_ask_div_int_nfc_central_1985(tmp_path):
-    """The Bears '85 had multiple defenders with INTs; query 1985 NFC
-    Central."""
-    db = tmp_path / "ff.duckdb"
-    _populated_db(db)
-    result = runner.invoke(
-        app,
-        [
-            "ask", "div-int",
-            "--division", "NFC Central",
-            "--start", "1985",
-            "--end", "1985",
-            "--mode", "historical",
-            "--db", str(db),
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    # Some defender from a 1985 NFC Central team should be in the
-    # output (Mike Singletary, Mike Richardson, Wilber Marshall, etc.).
-    assert "CHI" in result.output or "DET" in result.output \
-        or "GNB" in result.output or "MIN" in result.output \
-        or "TAM" in result.output
-
-
 # --- ask pos-top --------------------------------------------------------
 
 

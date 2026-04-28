@@ -70,13 +70,13 @@ fb_info ask career --rank-by rec_yds  --college "Alabama" --draft-rounds 1
 fb_info ask records --category offense
 fb_info ask records --category defense --n 3
 
-# Award counts (winners only) with composing filters:
-fb_info ask awards-top --award AP_FIRST --position SAFETY \
+# Career-by-award-count (top-N players ranked by lifetime award count):
+fb_info ask career --award AP_FIRST --position SAFETY \
     --max-career-stat def_int=30 --n 10
 #                       ^ "safeties with under 30 career INTs, ranked
 #                          by AP First-Team All-Pro count"
-fb_info ask awards-top --award MVP --n 10
-fb_info ask awards-top --award HOF --position WR --n 10
+fb_info ask career --award MVP --n 10
+fb_info ask career --award HOF --position WR --n 10
 #                       ^ Hall of Fame wide receivers
 
 # Two-player head-to-head:
@@ -86,10 +86,6 @@ fb_info ask compare --p1-id pfr:MariDa00 --p2-id pfr:MahoPa00  # disambiguate
 # List award winners by type / season:
 fb_info ask awards --award MVP                  # all MVP winners
 fb_info ask awards --award PB --season 2023     # 2023 Pro Bowlers
-
-# Two simpler legacy helpers:
-fb_info ask flex-top --round 3 --n 10 --scoring ppr
-fb_info ask div-int  --division "NFC North" --start 1990 --end 2005
 
 # Trivia — three modes plus replay/history:
 fb_info trivia play --rank-by rush_yds --n 5 \
@@ -103,6 +99,10 @@ fb_info trivia random --mode career --rank-by rush_yds
 # Every trivia game saves a spec; replay any past game by ID:
 fb_info trivia history                     # list recent games
 fb_info trivia replay 42                   # re-run game #42
+
+# Tiny local web frontend (optional `[web]` extras):
+pip install -e ".[web]"
+fb_info web                                # http://127.0.0.1:8000
 
 # Or any raw SQL:
 fb_info query "SELECT name, college, fpts_ppr FROM v_player_season_full
@@ -265,6 +265,33 @@ re-run against whatever the current DB has — answer sets may differ
 slightly if the DB was rebuilt with newer data, but the question stays
 the same.
 
+## Web frontend (optional)
+
+A tiny FastAPI app that wraps the same query helpers. Plain HTML, no
+JS framework, no build step — styled like motherfuckingwebsite.com.
+
+```bash
+pip install -e ".[web]"     # one-time, installs fastapi + uvicorn + jinja2
+fb_info web                 # http://127.0.0.1:8000 (default)
+fb_info web --port 9000 --db /path/to/ff.duckdb
+```
+
+Three pages:
+
+- `/ask` — pos-top / career / awards form. Pick `kind`, fill any
+  filters, hit run. Result table renders inline.
+- `/trivia/daily` — auto-starts today's deterministic game and drops
+  you into the guess loop.
+- `/trivia/random` — form to pin any subset of filters; the rest stays
+  random. Auto-starts on submit.
+- `/trivia/play` — make-your-own form with explicit filters
+  (rank-by, position, year range, team, awards, rookie-only, unique).
+
+Game state lives in an in-memory dict on the server, keyed by an
+opaque token. Restarting the server resets in-flight games (they're
+not persisted to the trivia history file like CLI games are — that
+side of things is CLI-only for now).
+
 ## Schema
 
 ```
@@ -418,7 +445,7 @@ don't redistribute scraped HTML.
 ## Development
 
 ```bash
-.venv/bin/pytest -q              # ~440 tests, all network-free
+.venv/bin/pytest -q              # ~430 tests, all network-free
 .venv/bin/pytest tests/test_pipeline.py -q     # end-to-end pipeline
 .venv/bin/pytest tests/test_cli_trivia.py tests/test_cli_new_commands.py -q
 ```
@@ -451,5 +478,6 @@ ffpts/
 ├── queries.py                 named helpers (pos_topN, career_topN, awards_list,
 │                                award_topN) + filter builder; player-season default
 ├── trivia_replay.py           save/load trivia game specs for replay + history
-└── cli.py                     `fb_info build | query | ask | trivia`
+├── web.py                     optional FastAPI frontend (`fb_info web`)
+└── cli.py                     `fb_info build | query | ask | trivia | web`
 ```

@@ -14,112 +14,6 @@ when needed; they are never the default.
 
 from __future__ import annotations
 
-from typing import Literal
-
-ScoringMode = Literal["std", "half", "ppr"]
-DivisionMode = Literal["historical", "franchise"]
-
-_FPTS_COLUMN_FOR_SCORING: dict[str, str] = {
-    "std":  "fpts_std",
-    "half": "fpts_half",
-    "ppr":  "fpts_ppr",
-}
-
-
-def flex_topN_by_draft_round(
-    round_: int,
-    n: int = 10,
-    scoring: ScoringMode = "ppr",
-) -> tuple[str, list]:
-    """Top-N FLEX (RB/WR/TE) player-seasons drafted in a given round.
-
-    Returns rows of (name, team, season, fpts, draft_round, draft_year,
-    draft_overall_pick) ordered by fpts descending. The fpts column
-    used corresponds to the ``scoring`` mode.
-    """
-    if scoring not in _FPTS_COLUMN_FOR_SCORING:
-        raise ValueError(
-            f"unknown scoring mode {scoring!r}; expected one of "
-            f"{list(_FPTS_COLUMN_FOR_SCORING)}"
-        )
-    fpts_col = _FPTS_COLUMN_FOR_SCORING[scoring]
-    sql = f"""
-        SELECT name,
-               team,
-               season,
-               {fpts_col} AS fpts,
-               draft_round,
-               draft_year,
-               draft_overall_pick
-        FROM   v_flex_seasons
-        WHERE  draft_round = ?
-          AND  {fpts_col} IS NOT NULL
-        ORDER BY {fpts_col} DESC
-        LIMIT  ?
-    """
-    return sql, [round_, n]
-
-
-def most_def_int_by_division(
-    division: str,
-    *,
-    start: int,
-    end: int,
-    n: int = 25,
-    division_mode: DivisionMode = "historical",
-) -> tuple[str, list]:
-    """Top-N player-seasons by defensive interceptions, scoped to a division.
-
-    Two interpretations of "division", picked by ``division_mode``:
-
-    - ``"historical"``: filter by the per-season division as it existed
-      that year. "NFC North" 1999-2001 returns no rows because the NFC
-      North didn't exist before 2002 — those seasons were "NFC Central".
-      Use this when you want strict period accuracy.
-
-    - ``"franchise"``: filter by the *current* franchises that make up
-      that division today. "NFC North" with this mode always means
-      CHI / DET / GB / MIN, regardless of what the division was called
-      that year. The query resolves the franchise set by selecting all
-      franchises that ever lived in the named division.
-
-    Returns rows of (name, team, season, def_int, conference, division,
-    franchise) ordered by def_int desc. Same player can appear multiple
-    times for different qualifying seasons (player-season default).
-    """
-    if division_mode == "historical":
-        where = "v.division = ?"
-        params: list = [division, start, end, n]
-    elif division_mode == "franchise":
-        where = """v.franchise IN (
-            SELECT DISTINCT franchise
-            FROM   v_player_season_full
-            WHERE  division = ?
-        )"""
-        params = [division, start, end, n]
-    else:
-        raise ValueError(
-            f"unknown division_mode {division_mode!r}; "
-            f"expected 'historical' or 'franchise'"
-        )
-
-    sql = f"""
-        SELECT v.name,
-               v.team,
-               v.season,
-               v.def_int,
-               v.conference,
-               v.division,
-               v.franchise
-        FROM   v_player_season_full v
-        WHERE  {where}
-          AND  v.season BETWEEN ? AND ?
-          AND  v.def_int IS NOT NULL
-        ORDER BY v.def_int DESC, v.season ASC
-        LIMIT  ?
-    """
-    return sql, params
-
 
 # Position-specific top-N: pick a position (or "FLEX" / "ALL"), pick a
 # stat to rank by, optionally filter by year range and/or draft round(s).
@@ -188,7 +82,7 @@ AWARD_TYPES_ALLOWED: frozenset[str] = frozenset({
     # with season = the player's last NFL season. Treated as a binary
     # award (vote_finish IS NULL) so --has-award HOF matches every
     # HOFer's final season, --ever-won HOF matches every season of a
-    # HOFer's career, and `awards-top --award HOF` lists HOFers (all
+    # HOFer's career, and `ask career --award HOF` lists HOFers (all
     # tied at award_count=1). Sources: auto-detected from PFR's "HOF"
     # name suffix on draft pages + curated KNOWN_HOFERS list for
     # UDFAs / pre-1970 inductees.

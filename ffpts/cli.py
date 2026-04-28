@@ -29,8 +29,6 @@ from ffpts.queries import (
     award_topN,
     awards_list,
     career_topN,
-    flex_topN_by_draft_round,
-    most_def_int_by_division,
     pos_topN,
 )
 
@@ -112,6 +110,35 @@ def cmd_build(
     typer.echo(f"  player_season_stats: {total} rows across {len(summary['seasons'])} seasons")
 
 
+@app.command("web")
+def cmd_web(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    db: Path = typer.Option(
+        DEFAULT_DB_PATH, "--db",
+        help="Path to the DuckDB file (the same file the CLI reads).",
+    ),
+) -> None:
+    """Launch a tiny local web frontend over the same query helpers.
+
+    Plain HTML, no JS framework. Routes:
+      /            home
+      /ask         pos-top / career / awards form + result table
+      /trivia      daily / random / make-your-own
+    """
+    try:
+        from ffpts.web import run as run_web
+    except ImportError as e:
+        typer.echo(
+            f"Web extras aren't installed: {e}. "
+            'Install with `pip install -e ".[web]"`.',
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    typer.echo(f"FF-pts web on http://{host}:{port} (Ctrl-C to stop)")
+    run_web(host=host, port=port, db=db)
+
+
 @app.command("query")
 def cmd_query(
     sql: str = typer.Argument(..., help="A SQL statement to run."),
@@ -124,49 +151,6 @@ def cmd_query(
         cols = [d[0] for d in cur.description] if cur.description else []
         rows = cur.fetchall() if cols else []
         _print_rows(rows, cols)
-    finally:
-        con.close()
-
-
-@ask_app.command("flex-top")
-def ask_flex_top(
-    round_: int = typer.Option(..., "--round", help="Draft round to filter on."),
-    n: int = typer.Option(10, "--n", help="Number of player-seasons to return."),
-    scoring: str = typer.Option("ppr", "--scoring", help="std | half | ppr"),
-    db: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the DuckDB file."),
-) -> None:
-    """Top-N FLEX (RB/WR/TE) player-seasons drafted in a given round."""
-    sql, params = flex_topN_by_draft_round(round_, n=n, scoring=scoring)  # type: ignore[arg-type]
-    con = _open_db(db)
-    try:
-        cur = con.execute(sql, params)
-        cols = [d[0] for d in cur.description]
-        _print_rows(cur.fetchall(), cols)
-    finally:
-        con.close()
-
-
-@ask_app.command("div-int")
-def ask_div_int(
-    division: str = typer.Option(..., "--division", help='Division name, e.g. "NFC North".'),
-    start: int = typer.Option(..., "--start", help="First season (inclusive)."),
-    end: int = typer.Option(..., "--end", help="Last season (inclusive)."),
-    n: int = typer.Option(25, "--n", help="Number of player-seasons to return."),
-    mode: str = typer.Option(
-        "historical", "--mode",
-        help="historical | franchise — see queries.py for semantics.",
-    ),
-    db: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the DuckDB file."),
-) -> None:
-    """Top-N player-seasons by defensive INTs scoped to a division."""
-    sql, params = most_def_int_by_division(
-        division, start=start, end=end, n=n, division_mode=mode,  # type: ignore[arg-type]
-    )
-    con = _open_db(db)
-    try:
-        cur = con.execute(sql, params)
-        cols = [d[0] for d in cur.description]
-        _print_rows(cur.fetchall(), cols)
     finally:
         con.close()
 
@@ -1037,7 +1021,18 @@ def ask_records(
 def ask_career(
     rank_by: str = typer.Option(
         "fpts_ppr", "--rank-by",
-        help="Stat column to sum across seasons.",
+        help="Stat column to sum across seasons. Ignored when --award "
+             "is set (which dispatches to award-count ranking).",
+    ),
+    award: str | None = typer.Option(
+        None, "--award",
+        help="Rank by career *count* of this award type instead of a "
+             "stat sum. One of: "
+             + ", ".join(sorted(AWARD_TYPES_ALLOWED)) + ". "
+             "Composes with --position, --college, --min-career-stat, "
+             "--max-career-stat. Other filters (start/end, ever-won, "
+             "min-seasons, draft, name) are ignored when --award is set "
+             "since the underlying award_topN helper doesn't accept them.",
     ),
     n: int = typer.Option(10, "--n"),
     position: str = typer.Option(
@@ -1094,11 +1089,17 @@ def ask_career(
     ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
 ) -> None:
-    """Top-N players by *career-total* of --rank-by.
+    """Top-N players by career value of either a stat sum (--rank-by)
+    or an award count (--award).
 
-    Different unit-of-analysis from `ask` (which is player-season).
-    Career totals are summed across the seasons that match the
-    optional filters, then ranked.
+    --rank-by mode (default): SUM(stat) across qualifying seasons,
+    ranked descending. Ratio stats (pass_cmp_pct / catch_rate)
+    recompute from the underlying numerator / denominator.
+
+    --award mode: COUNT(*) of player_awards rows of that type
+    (outright winners only). Composes with position, college, and
+    career stat min/max filters; the rest are silently ignored
+    because the underlying award_topN helper doesn't accept them.
     """
     rounds_list: list[int | str] | None = None
     if draft_rounds:
@@ -1120,19 +1121,32 @@ def ask_career(
                     raise typer.Exit(code=2)
     min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
     max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
-    sql, params = career_topN(
-        rank_by, n=n, position=position,
-        start=start, end=end,
-        ever_won_award=ever_won if ever_won else None,
-        min_seasons=min_seasons,
-        college=college,
-        min_career_stats=min_career_dict if min_career_dict else None,
-        max_career_stats=max_career_dict if max_career_dict else None,
-        draft_rounds=rounds_list,
-        drafted_by=drafted_by,
-        first_name_contains=first_name_contains,
-        last_name_contains=last_name_contains,
-    )
+
+    if award:
+        # Award-count ranking. award_topN accepts a smaller filter
+        # set than career_topN — start/end, ever_won, min_seasons,
+        # draft_rounds, drafted_by, first/last_name_contains all get
+        # silently dropped here. The user's --award flag wins.
+        sql, params = award_topN(
+            award, n=n, position=position,
+            college=college,
+            min_career_stats=min_career_dict if min_career_dict else None,
+            max_career_stats=max_career_dict if max_career_dict else None,
+        )
+    else:
+        sql, params = career_topN(
+            rank_by, n=n, position=position,
+            start=start, end=end,
+            ever_won_award=ever_won if ever_won else None,
+            min_seasons=min_seasons,
+            college=college,
+            min_career_stats=min_career_dict if min_career_dict else None,
+            max_career_stats=max_career_dict if max_career_dict else None,
+            draft_rounds=rounds_list,
+            drafted_by=drafted_by,
+            first_name_contains=first_name_contains,
+            last_name_contains=last_name_contains,
+        )
     con = _open_db(db)
     try:
         cur = con.execute(sql, params)
@@ -1168,71 +1182,6 @@ def ask_awards(
     (winners only); pass --award and/or --season to scope down."""
     sql, params = awards_list(
         award_type=award, season=season, winners_only=winners_only,
-    )
-    con = _open_db(db)
-    try:
-        cur = con.execute(sql, params)
-        cols = [d[0] for d in cur.description]
-        _print_rows(cur.fetchall(), cols)
-    finally:
-        con.close()
-
-
-# ---------------------------------------------------------------------------
-# `ask awards-top` — top-N players by career count of an award type
-# ---------------------------------------------------------------------------
-
-@ask_app.command("awards-top")
-def ask_awards_top(
-    award: str = typer.Option(
-        ..., "--award",
-        help="Award type to count. One of: " + ", ".join(sorted(AWARD_TYPES_ALLOWED))
-        + ". Outright winners only — vote-only finalists excluded.",
-    ),
-    n: int = typer.Option(10, "--n"),
-    position: str = typer.Option(
-        "ALL", "--position",
-        help='Position scope (or alias: SAFETY / DB / LB / DL / FLEX / '
-             'ALL). Filters to players whose stats include any season '
-             "at this position.",
-    ),
-    college: str | None = typer.Option(
-        None, "--college",
-        help="College name (substring match). Drafted players only.",
-    ),
-    min_career_stat: list[str] | None = typer.Option(
-        None, "--min-career-stat",
-        help="Career-total floor of the form col=value. Repeatable. "
-             "Example: --min-career-stat games=64",
-    ),
-    max_career_stat: list[str] | None = typer.Option(
-        None, "--max-career-stat",
-        help="Career-total ceiling. Example: "
-             '"--max-career-stat def_int=30" for the user\'s sample '
-             "query: safeties with <30 career INTs and the most "
-             "AP_FIRST awards.",
-    ),
-    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
-) -> None:
-    """Top-N players by career count of a single award type.
-
-    Counts outright wins only (vote_finish=1 for vote-ranked awards;
-    all rows for binary awards like PB / AP_FIRST / AP_SECOND /
-    WPMOY). Position, college, and career stat filters compose.
-
-    Example — safeties with under 30 career interceptions, ranked
-    by AP_FIRST count:
-
-        fb_info ask awards-top --award AP_FIRST --position SAFETY \\
-            --max-career-stat def_int=30 --n 10
-    """
-    min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
-    max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
-    sql, params = award_topN(
-        award, n=n, position=position,
-        college=college,
-        min_career_stats=min_career_dict if min_career_dict else None,
-        max_career_stats=max_career_dict if max_career_dict else None,
     )
     con = _open_db(db)
     try:

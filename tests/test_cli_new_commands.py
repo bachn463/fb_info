@@ -449,16 +449,16 @@ def test_trivia_random_position_matches_stat(tmp_path):
     assert len(seen_pairs) >= 5
 
 
-# ---------- ask awards-top, college, career stat min/max ----------
+# ---------- ask career --award (consolidated awards-top), college, career stat min/max ----------
 
-def test_cli_ask_awards_top_runs(tmp_path):
-    """ask awards-top should run with the SAFETY alias and a
-    --max-career-stat filter."""
+def test_cli_ask_career_award_mode_runs(tmp_path):
+    """`ask career --award AP_FIRST` dispatches to award-count
+    ranking (the old `awards-top` command, now consolidated)."""
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
     result = runner.invoke(
         app,
-        ["ask", "awards-top",
+        ["ask", "career",
          "--award", "AP_FIRST",
          "--position", "SAFETY",
          "--max-career-stat", "def_int=30",
@@ -466,16 +466,18 @@ def test_cli_ask_awards_top_runs(tmp_path):
          "--db", str(db)],
     )
     assert result.exit_code == 0, result.output
-    # Header columns should appear.
+    # Award-count output columns differ from stat-sum output —
+    # specifically award_count is the rank value.
     for col in ("name", "positions", "teams", "college", "award_count"):
         assert col in result.output
 
 
-def test_cli_ask_awards_top_help_lists_safety_alias():
-    """The --position help text should mention SAFETY so users find it."""
-    result = runner.invoke(app, ["ask", "awards-top", "--help"])
+def test_cli_ask_career_help_lists_award_flag():
+    """--award shows up in the help so users discover the
+    award-count mode without needing the old awards-top command."""
+    result = runner.invoke(app, ["ask", "career", "--help"])
     assert result.exit_code == 0
-    assert "SAFETY" in result.output
+    assert "--award" in result.output
 
 
 def test_cli_ask_pos_top_min_career_stat_runs(tmp_path):
