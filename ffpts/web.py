@@ -57,13 +57,13 @@ def _new_game_id() -> str:
 def _make_app(db_path: Path) -> FastAPI:
     """Construct the FastAPI app, closure-scoping the DB path so we
     don't have to pass it through every handler."""
-    app = FastAPI(title="FF-pts")
+    app = FastAPI(title="FB Info")
 
     # ----- Pages -----
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return _page("FF-pts", _intro_body())
+        return _page("FB Info", _intro_body())
 
     @app.get("/ask", response_class=HTMLResponse)
     def ask_form() -> str:
@@ -469,7 +469,7 @@ def _page(title: str, body: str) -> str:
   <title>{html.escape(title)}</title>
 </head>
 <body>
-<h1><a href="/">FF-pts</a></h1>
+<h1><a href="/">FB Info</a></h1>
 {body}
 <hr>
 <p><small><a href="/">home</a> &middot; <a href="/ask">ask</a> &middot; <a href="/trivia">trivia</a></small></p>

@@ -38,7 +38,7 @@ def client(tmp_path):
 def test_home_renders(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "FF-pts" in r.text
+    assert "FB Info" in r.text
 
 
 def test_ask_form_renders(client):

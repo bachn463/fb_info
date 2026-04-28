@@ -34,11 +34,12 @@ from ffpts.queries import (
 
 app = typer.Typer(
     add_completion=False,
-    help="NFL player & team season stats — local DuckDB, scraped/loaded from nflverse.",
+    help="FB Info — local DuckDB of NFL player and team season stats "
+         "scraped from Pro Football Reference.",
 )
 ask_app = typer.Typer(
     add_completion=False,
-    help="Run a named query helper from ffpts.queries.",
+    help="Run a named query helper (pos-top / career / awards / compare / records).",
 )
 app.add_typer(ask_app, name="ask")
 
@@ -135,7 +136,7 @@ def cmd_web(
             err=True,
         )
         raise typer.Exit(code=2)
-    typer.echo(f"FF-pts web on http://{host}:{port} (Ctrl-C to stop)")
+    typer.echo(f"FB Info web on http://{host}:{port} (Ctrl-C to stop)")
     run_web(host=host, port=port, db=db)
 
 

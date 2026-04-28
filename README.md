@@ -1,4 +1,4 @@
-# FF-pts
+# FB Info
 
 Local, queryable database of NFL player and team season stats — every
 stat category (passing, rushing, receiving, defense, kicking, punting,

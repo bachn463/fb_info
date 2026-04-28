@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ffpts"
 version = "0.1.0"
-description = "Queryable NFL player & team season stats DB scraped from Pro Football Reference, with computed Std/Half/PPR fantasy points."
+description = "FB Info — queryable NFL player & team season stats DB scraped from Pro Football Reference, with computed Std/Half/PPR fantasy points."
 requires-python = ">=3.11"
-authors = [{ name = "FF-pts" }]
+authors = [{ name = "FB Info" }]
 dependencies = [
     # Data source: nflverse via nflreadpy (returns polars DataFrames).
     # We pivoted away from scraping pro-football-reference.com after
