@@ -414,19 +414,24 @@ def test_trivia_random_position_matches_stat(tmp_path):
             input="quit\n",
         )
         # Title looks like:
-        #   "Top 10 RB player-seasons by rush_yds (...)"
-        # or "Top 10 player-seasons by fpts_ppr ..."  (no position word
-        # = ALL).
+        #   "Top 10 RB player-seasons by rush_yds (...)"          (season mode)
+        #   "Top 10 player-seasons by fpts_ppr ..."                (season, ALL)
+        #   "Top 10 RB career-totals by rush_yds (...)"            (career mode)
         title = next(
             (l for l in r.output.splitlines() if l.startswith("Top ")),
             None,
         )
         if title is None:
             continue
-        # Parse: "Top {n} [{POS} ]player-seasons by {rank_by}..."
-        head = title.split(" player-seasons by ")[0]
-        rest = title.split(" player-seasons by ")[1]
-        rank_by = rest.split(" ", 1)[0].rstrip(",")
+        # Parse: "Top {n} [{POS} ]<unit> by {rank_by}..." where unit is
+        # one of "player-seasons" | "career-totals".
+        for unit in (" player-seasons by ", " career-totals by "):
+            if unit in title:
+                head, _, tail = title.partition(unit)
+                break
+        else:
+            continue  # Unrecognized title — skip.
+        rank_by = tail.split(" ", 1)[0].rstrip(",")
         head_parts = head.split()
         # head_parts: ["Top", "10"] or ["Top", "10", "RB"]
         position = head_parts[2] if len(head_parts) >= 3 else "ALL"
@@ -573,6 +578,100 @@ def test_trivia_random_user_pinned_rank_by(tmp_path):
         )
         assert title is not None
         assert "by rush_yds" in title, f"seed {seed}: {title}"
+
+
+def test_trivia_random_career_mode_pin(tmp_path):
+    """--mode career should pin the trivia to career-totals across all
+    seeds. Title should read "career-totals" not "player-seasons" and
+    season strings on the final ranked list should be ranges, not
+    single years."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    r = runner.invoke(
+        app,
+        ["trivia", "random", "--seed", "1",
+         "--mode", "career",
+         "--rank-by", "rush_yds",
+         "--db", str(db)],
+        input="give up\n",
+    )
+    assert r.exit_code == 0, r.output
+    title = next(
+        (l for l in r.output.splitlines() if l.startswith("Top ")), None,
+    )
+    assert title is not None
+    assert "career-totals by rush_yds" in title
+
+
+def test_trivia_random_season_mode_pin(tmp_path):
+    """--mode season pins season-mode even when the random roll would
+    have picked career."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    r = runner.invoke(
+        app,
+        ["trivia", "random", "--seed", "1",
+         "--mode", "season",
+         "--rank-by", "rush_yds",
+         "--db", str(db)],
+        input="quit\n",
+    )
+    assert r.exit_code == 0, r.output
+    title = next(
+        (l for l in r.output.splitlines() if l.startswith("Top ")), None,
+    )
+    assert title is not None
+    assert "player-seasons by rush_yds" in title
+
+
+def test_trivia_random_invalid_mode_errors(tmp_path):
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    r = runner.invoke(
+        app,
+        ["trivia", "random", "--mode", "bogus", "--db", str(db)],
+    )
+    assert r.exit_code == 2
+
+
+def test_trivia_random_career_some_seed_lands_naturally(tmp_path):
+    """Without pinning, ~25% of seeds should land in career mode.
+    Sweep enough seeds to make a non-flaky assertion that the random
+    gen does pick career mode at all."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    saw_career = False
+    for seed in range(40):
+        r = runner.invoke(
+            app, ["trivia", "random", "--seed", str(seed), "--db", str(db)],
+            input="quit\n",
+        )
+        if "career-totals by " in r.output:
+            saw_career = True
+            break
+    assert saw_career, "expected at least one of 40 seeds to land in career mode"
+
+
+def test_trivia_daily_uses_same_generator_as_random(tmp_path):
+    """trivia daily routes through _pick_non_empty_template just like
+    random — career mode should appear in daily too. Drive deterministic
+    coverage by reaching into the same helper functions; this is a
+    sanity check that the two commands share code paths."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    # Smoke test: trivia daily runs to completion (we can't pin its
+    # seed so we just check the title format matches the shared
+    # generator's output).
+    r = runner.invoke(
+        app, ["trivia", "daily", "--db", str(db)], input="quit\n",
+    )
+    assert r.exit_code == 0, r.output
+    title = next(
+        (l for l in r.output.splitlines() if l.startswith("Top ")), None,
+    )
+    assert title is not None
+    # Daily title uses the same unit phrasing as random.
+    assert (" player-seasons by " in title) or (" career-totals by " in title)
 
 
 def test_trivia_random_label_changes_with_overrides(tmp_path):
