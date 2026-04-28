@@ -33,6 +33,7 @@ from ffpts.queries import (
     AWARD_TYPES_ALLOWED,
     POSITION_ALIASES,
     RANK_BY_ALLOWED,
+    TRIVIA_RANK_BY_ALLOWED,
     award_topN,
     awards_list,
     career_topN,
@@ -543,7 +544,10 @@ def _trivia_index_body() -> str:
 
 def _trivia_play_form_body() -> str:
     pos_opts = _opts(_position_choices())
-    rank_opts = _opts(sorted(RANK_BY_ALLOWED))
+    # Trivia restricts rank_by — `age` and draft_* are valid for ask
+    # queries but produce trivial trivia answer sets, so the dropdown
+    # excludes them.
+    rank_opts = _opts(sorted(TRIVIA_RANK_BY_ALLOWED))
     award_opts = _opts([""] + sorted(AWARD_TYPES_ALLOWED))
     return f"""
 <p>Build a custom trivia. Same filters as the CLI's <code>trivia play</code>.</p>
@@ -568,8 +572,9 @@ def _trivia_play_form_body() -> str:
 
 def _trivia_random_form_body() -> str:
     pos_opts = _opts(_position_choices())
-    # rank_by leaves blank so the random gen picks if not pinned
-    rank_opts = _opts([""] + sorted(RANK_BY_ALLOWED))
+    # rank_by leaves blank so the random gen picks if not pinned.
+    # Same trivia-rank-by restriction as the play form.
+    rank_opts = _opts([""] + sorted(TRIVIA_RANK_BY_ALLOWED))
     award_opts = _opts([""] + sorted(AWARD_TYPES_ALLOWED))
     return f"""
 <p>Random trivia. All fields are optional &mdash; anything you fill becomes

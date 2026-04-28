@@ -98,6 +98,17 @@ TIEBREAK_BY_ALLOWED: frozenset[str] = RANK_BY_ALLOWED | frozenset({
     "position", "season", "age", "name", "team",
 })
 
+# Subset of RANK_BY_ALLOWED that's meaningful for trivia. Trivia asks
+# "guess the player who led the league in X" — for that frame, ranking
+# by `age` (oldest player to record a stat) or by draft metadata
+# (`draft_year` / `draft_round` / `draft_overall_pick`) makes a poor
+# question. Trivia paths (CLI `trivia play` / `trivia random` and the
+# web trivia forms) restrict to this set; the general `ask pos-top`
+# helper still accepts the full RANK_BY_ALLOWED.
+TRIVIA_RANK_BY_ALLOWED: frozenset[str] = RANK_BY_ALLOWED - frozenset({
+    "age", "draft_year", "draft_round", "draft_overall_pick",
+})
+
 
 def pos_topN(
     position: str,

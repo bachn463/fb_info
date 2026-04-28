@@ -26,6 +26,7 @@ from ffpts.pipeline import build as run_build
 from ffpts.queries import (
     AWARD_TYPES_ALLOWED,
     RANK_BY_ALLOWED,
+    TRIVIA_RANK_BY_ALLOWED,
     award_topN,
     awards_list,
     career_topN,
@@ -361,6 +362,26 @@ def ask_pos_top(
         con.close()
 
 
+def _validate_trivia_rank_by(rank_by: str | None) -> None:
+    """Reject rank_by columns that don't fit the trivia frame.
+
+    `age` and the draft-metadata columns (draft_year / draft_round /
+    draft_overall_pick) are valid `ask pos-top` rank-bys but make for
+    poor trivia ("guess the player who led the league in age" — the
+    answer set is just whoever was oldest, not really a stat
+    leaderboard). The general allowlist still accepts them; trivia
+    paths use TRIVIA_RANK_BY_ALLOWED."""
+    if rank_by is None or rank_by in TRIVIA_RANK_BY_ALLOWED:
+        return
+    typer.echo(
+        f"--rank-by {rank_by!r} isn't allowed in trivia. "
+        f"`age` and the draft_* columns produce trivial answer sets. "
+        f"Allowed: {', '.join(sorted(TRIVIA_RANK_BY_ALLOWED))}",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
 def _parse_stat_pairs(
     pairs: list[str] | None, flag_name: str
 ) -> dict[str, float]:
@@ -516,6 +537,7 @@ def trivia_play(
     ``hint`` for a clue; ``quit`` to exit (also prints the ranked
     list — the user always leaves with the answers visible).
     """
+    _validate_trivia_rank_by(rank_by)
     rounds_list: list[int | str] | None = None
     if draft_rounds:
         rounds_list = []
@@ -2123,6 +2145,7 @@ def trivia_random(
                     raise typer.Exit(code=2)
     min_stats_dict = _parse_stat_pairs(min_stat, "--min-stat")
     max_stats_dict = _parse_stat_pairs(max_stat, "--max-stat")
+    _validate_trivia_rank_by(rank_by)
     min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
     max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
 

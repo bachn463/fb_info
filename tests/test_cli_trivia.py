@@ -322,6 +322,41 @@ def test_trivia_hint_progressive_levels(tmp_path):
     assert "position" in h3_line
 
 
+def test_trivia_play_rejects_age_rank_by(tmp_path):
+    """`age` is a valid `ask pos-top` rank-by but trivia disallows it
+    (trivial answer set: just the oldest player)."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        ["trivia", "play", "--rank-by", "age", "--n", "5",
+         "--position", "RB", "--db", str(db)],
+    )
+    assert result.exit_code == 2
+    assert "age" in result.output
+
+
+def test_trivia_play_rejects_draft_year_rank_by(tmp_path):
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        ["trivia", "play", "--rank-by", "draft_year", "--n", "5",
+         "--db", str(db)],
+    )
+    assert result.exit_code == 2
+
+
+def test_trivia_random_rejects_age_rank_by(tmp_path):
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    result = runner.invoke(
+        app,
+        ["trivia", "random", "--rank-by", "age", "--db", str(db)],
+    )
+    assert result.exit_code == 2
+
+
 def test_trivia_help_lists_command():
     """`ffpts trivia` should be discoverable from --help."""
     result = runner.invoke(app, ["--help"])
