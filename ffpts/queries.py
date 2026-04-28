@@ -184,6 +184,15 @@ AWARD_TYPES_ALLOWED: frozenset[str] = frozenset({
     "MVP", "OPOY", "DPOY", "OROY", "DROY", "CPOY",
     "WPMOY",
     "PB", "AP_FIRST", "AP_SECOND",
+    # HOF — Hall of Fame induction. Stored as one row per inductee
+    # with season = the player's last NFL season. Treated as a binary
+    # award (vote_finish IS NULL) so --has-award HOF matches every
+    # HOFer's final season, --ever-won HOF matches every season of a
+    # HOFer's career, and `awards-top --award HOF` lists HOFers (all
+    # tied at award_count=1). Sources: auto-detected from PFR's "HOF"
+    # name suffix on draft pages + curated KNOWN_HOFERS list for
+    # UDFAs / pre-1970 inductees.
+    "HOF",
 })
 
 # Columns allowed as ORDER BY tiebreakers. Superset of RANK_BY_ALLOWED

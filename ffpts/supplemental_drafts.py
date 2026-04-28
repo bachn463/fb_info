@@ -130,6 +130,35 @@ class CollegeOverride:
     player_id: str | None = None
 
 
+# Hand-curated list of Hall of Famers whose induction isn't picked up
+# from PFR's "HOF" name suffix on draft pages — UDFAs, pre-1970
+# inductees, and any modern HOFer where the suffix didn't carry through
+# the parser. Most HOFers ARE auto-detected from draft.htm so this
+# list only needs to cover the gaps.
+#
+# Match is by display name; entries that collide with another player
+# of the same name should be added with an explicit ``player_id``.
+# The pipeline records one player_awards row per match with
+# award_type='HOF', season = MAX(season) from player_season_stats
+# (the player's final NFL season), vote_finish = NULL (binary award).
+KNOWN_HOFERS: list[str] = [
+    # UDFAs (no draft_picks row, never auto-tagged).
+    "Cliff Harris",          # Cowboys S, undrafted, HOF 2020
+    "Drew Pearson",          # Cowboys WR, undrafted, HOF 2021
+    "John Randle",           # Vikings DT, undrafted, HOF 2010
+    "Warren Moon",           # CFL → NFL, undrafted by NFL, HOF 2006
+    # Supplemental-draft picks (draft_picks row inserted by us, but
+    # the original PFR draft.htm doesn't have a HOF tag for them).
+    "Cris Carter",           # HOF 2013
+    "Reggie White",          # HOF 2006
+    "Steve Young",           # HOF 2005
+    # Pre-1970 main-draft picks (covered by SUPPLEMENTAL_DRAFTS for
+    # the draft_picks row, but the HOF suffix isn't on those rows).
+    "OJ Simpson",            # 1969 #1 overall, HOF 1985
+    "Joe Greene",            # 1969 4th pick, HOF 1987
+]
+
+
 # Hand-curated overrides. Add to this list to extend coverage.
 KNOWN_COLLEGE_OVERRIDES: list[CollegeOverride] = [
     # --- Famous post-2010 transfers (drafted-from college first wasn't

@@ -45,6 +45,12 @@ ask_app = typer.Typer(
 app.add_typer(ask_app, name="ask")
 
 
+def _history_dir_for_db(db_path: str | Path) -> Path:
+    """Trivia history lives alongside the DB so test runs (which use
+    a tmp_path DB) don't leak files into the repo's data/ directory."""
+    return Path(db_path).resolve().parent / "trivia_history"
+
+
 def _open_db(db_path: str | Path) -> duckdb.DuckDBPyConnection:
     db_path = Path(db_path)
     if not db_path.exists():
@@ -588,6 +594,42 @@ def trivia_play(
         min_stats=min_stats_dict, max_stats=max_stats_dict,
         unique=unique,
     )
+
+    # Save a template-shaped spec so this game can be replayed later.
+    # Mirrors what `_resolve_template` consumes — same shape as
+    # daily/random templates, with ``mode = "season"`` since play is
+    # always single-season.
+    from ffpts.trivia_replay import save_spec
+    play_spec: dict = {
+        "rank_by":  rank_by,
+        "n":        n,
+        "position": position,
+        "mode":     "season",
+        "unique":   unique,
+    }
+    if start is not None:               play_spec["start"]               = start
+    if end is not None:                 play_spec["end"]                 = end
+    if team:                            play_spec["team"]                = team
+    if division:                        play_spec["division"]            = division
+    if conference:                      play_spec["conference"]          = conference
+    if first_name_contains:             play_spec["first_name_contains"] = first_name_contains
+    if last_name_contains:              play_spec["last_name_contains"]  = last_name_contains
+    if has_award:                       play_spec["has_award"]           = has_award
+    if ever_won:                        play_spec["ever_won_award"]      = ever_won
+    if rookie_only:                     play_spec["rookie_only"]         = True
+    if rounds_list:                     play_spec["draft_rounds"]        = rounds_list
+    if draft_start is not None:         play_spec["draft_start"]         = draft_start
+    if draft_end is not None:           play_spec["draft_end"]           = draft_end
+    if drafted_by:                      play_spec["drafted_by"]          = drafted_by
+    if tiebreak_by:                     play_spec["tiebreak_by"]         = tiebreak_by
+    if min_stats_dict:                  play_spec["min_stats"]           = min_stats_dict
+    if max_stats_dict:                  play_spec["max_stats"]           = max_stats_dict
+    game_id = save_spec(
+        play_spec, label="play",
+        history_dir=_history_dir_for_db(db),
+    )
+    typer.echo(f"(game {game_id} — replay with `fb_info trivia replay {game_id}`)")
+
     _run_trivia_loop(answers, rank_by=rank_by, title=title)
 
 
@@ -1944,10 +1986,33 @@ def _pick_non_empty_template(
 
 def _run_template(
     template: dict, answers: list[dict],
-    n: int, rank_by: str, position: str, *, label: str,
+    n: int, rank_by: str, position: str,
+    *, label: str, history_dir: Path | None = None, save: bool = True,
 ) -> None:
     """Common end-of-pipeline: print label, build title from the
-    resolved template args, run the REPL."""
+    resolved template args, run the REPL.
+
+    ``save=True`` (default) persists the resolved template to
+    ``history_dir`` (defaulting to data/trivia_history/ when None) so
+    the game can be replayed via ``trivia replay <id>``. Replay itself
+    sets save=False so the history isn't doubled when re-running an
+    old game."""
+    if save:
+        from ffpts.trivia_replay import save_spec, DEFAULT_HISTORY_DIR
+
+        # Re-attach the runtime fields so the saved spec is a
+        # complete, self-contained template (replay rebuilds the game
+        # from this dict alone).
+        full_template = dict(template)
+        full_template.setdefault("rank_by",  rank_by)
+        full_template.setdefault("n",        n)
+        full_template.setdefault("position", position)
+        game_id = save_spec(
+            full_template,
+            label=label,
+            history_dir=history_dir or DEFAULT_HISTORY_DIR,
+        )
+        typer.echo(f"(game {game_id} — replay with `fb_info trivia replay {game_id}`)")
     args = dict(template)
     args.pop("rank_by", None)
     args.pop("n", None)
@@ -2007,6 +2072,7 @@ def trivia_daily(
     _run_template(
         template, answers, n, rank_by, position,
         label=f"daily for {datetime.date.today()}",
+        history_dir=_history_dir_for_db(db),
     )
 
 
@@ -2156,7 +2222,86 @@ def trivia_random(
         typer.echo("No matching player-seasons for any random template.")
         raise typer.Exit(code=0)
     label = "random with pins" if overrides else "random"
-    _run_template(template, answers, n_, rank_by_, position_, label=label)
+    _run_template(
+        template, answers, n_, rank_by_, position_,
+        label=label, history_dir=_history_dir_for_db(db),
+    )
+
+
+@trivia_app.command("replay")
+def trivia_replay(
+    game_id: str = typer.Argument(
+        ...,
+        help='Game ID from `trivia history` (e.g. "42" or "000042"). '
+             "The exact same template runs against the current DB — "
+             "answer set may differ if the DB was rebuilt with newer "
+             "data, but the question stays the same.",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+) -> None:
+    """Replay a saved trivia game by ID."""
+    from ffpts.trivia_replay import load_spec
+
+    history_dir = _history_dir_for_db(db)
+    try:
+        spec = load_spec(game_id, history_dir=history_dir)
+    except FileNotFoundError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1)
+
+    template = spec["template"]
+    label = f"replay of #{spec['id']} ({spec.get('label', 'unknown')})"
+    typer.echo(
+        f"Replaying game {spec['id']} (saved {spec.get('saved_at', 'unknown')})"
+    )
+
+    con = _open_db(db)
+    try:
+        answers, n_, rank_by_, position_ = _resolve_template(con, template)
+    finally:
+        con.close()
+    if not answers:
+        typer.echo("No matching player-seasons for this saved template.")
+        raise typer.Exit(code=0)
+    # save=False — replays don't get re-saved (would inflate history
+    # and confuse "replay of #N" loops).
+    _run_template(
+        template, answers, n_, rank_by_, position_,
+        label=label, save=False,
+    )
+
+
+@trivia_app.command("history")
+def trivia_history(
+    n: int = typer.Option(20, "--n", help="Show this many recent games."),
+    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+) -> None:
+    """List recent saved trivia games."""
+    from ffpts.trivia_replay import list_recent
+
+    games = list_recent(n=n, history_dir=_history_dir_for_db(db))
+    if not games:
+        typer.echo("No saved trivia games yet — play one to populate history.")
+        return
+    typer.echo(f"Recent trivia games (newest first, top {len(games)}):")
+    for g in games:
+        gid = g.get("id", "?")
+        when = g.get("saved_at", "?")
+        # Trim ISO timestamp microseconds for display.
+        if isinstance(when, str) and "." in when:
+            when = when.split(".", 1)[0]
+        label = g.get("label", "")
+        t = g.get("template", {})
+        rank_by = t.get("rank_by", "?")
+        pos = t.get("position", "ALL")
+        mode = t.get("mode", "season")
+        n_count = t.get("n", "?")
+        # One-line digest — full template can be inspected via the
+        # JSON file directly if needed.
+        typer.echo(
+            f"  #{gid}  {when}  [{label}]  "
+            f"top {n_count} {pos} {mode}/{rank_by}"
+        )
 
 
 if __name__ == "__main__":

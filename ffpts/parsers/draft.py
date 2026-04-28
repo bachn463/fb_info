@@ -44,16 +44,23 @@ def parse_draft(html: str, season: int) -> list[dict]:
         # PFR's college cell can be empty for older / international /
         # never-played picks. Empty string → None for clean nulls in DB.
         college = (raw.get("college_id") or "").strip() or None
+        # PFR appends "HOF" to Hall of Famers' names in the draft table
+        # (e.g. "Walter PaytonHOF"). We strip it for clean display in
+        # `players.name` and surface the bit as `is_hof` so the
+        # pipeline can derive a player_awards row.
+        raw_name = raw.get("player") or ""
+        is_hof = raw_name.endswith("HOF")
         rows.append(
             {
                 "player_id":    f"pfr:{slug}",
-                "name":         _strip_hof_suffix(raw.get("player")),
+                "name":         _strip_hof_suffix(raw_name),
                 "year":         season,
                 "round":        round_,
                 "overall_pick": pick,
                 "team":         raw.get("team"),
                 "position":     raw.get("pos"),
                 "college":      college,
+                "is_hof":       is_hof,
             }
         )
     return rows

@@ -76,6 +76,8 @@ fb_info ask awards-top --award AP_FIRST --position SAFETY \
 #                       ^ "safeties with under 30 career INTs, ranked
 #                          by AP First-Team All-Pro count"
 fb_info ask awards-top --award MVP --n 10
+fb_info ask awards-top --award HOF --position WR --n 10
+#                       ^ Hall of Fame wide receivers
 
 # Two-player head-to-head:
 fb_info ask compare "Tom Brady" "Peyton Manning"
@@ -89,7 +91,7 @@ fb_info ask awards --award PB --season 2023     # 2023 Pro Bowlers
 fb_info ask flex-top --round 3 --n 10 --scoring ppr
 fb_info ask div-int  --division "NFC North" --start 1990 --end 2005
 
-# Trivia — three modes:
+# Trivia — three modes plus replay/history:
 fb_info trivia play --rank-by rush_yds --n 5 \
     --position RB --team PIT --start 1990 --end 2020
 fb_info trivia daily                       # same game for everyone today
@@ -97,6 +99,10 @@ fb_info trivia random                      # different every call
 fb_info trivia random --seed 42            # reproducible
 fb_info trivia random --start 1970 --end 1990 --team PIT
 fb_info trivia random --mode career --rank-by rush_yds
+
+# Every trivia game saves a spec; replay any past game by ID:
+fb_info trivia history                     # list recent games
+fb_info trivia replay 42                   # re-run game #42
 
 # Or any raw SQL:
 fb_info query "SELECT name, college, fpts_ppr FROM v_player_season_full
@@ -236,6 +242,29 @@ whose answer set has fewer than N rows or includes any rank-value of 0
 shouldn't be a 0-rush-yds player on a rushing leaderboard). Up to 25
 attempts before falling back to a minimum-filter template.
 
+### Replay and history
+
+Every trivia game (play / daily / random) writes its resolved template
+to `<db_dir>/trivia_history/000001.json` (next to the DB) so it can be
+replayed later. The opener prints the assigned ID:
+
+```
+$ fb_info trivia random --seed 7
+(game 000042 — replay with `fb_info trivia replay 000042`)
+Top 10 RB player-seasons by rush_yds (1995-2020), from PIT, ...
+```
+
+```bash
+fb_info trivia history          # list the 20 most-recent games
+fb_info trivia history --n 100  # see more
+fb_info trivia replay 42        # re-run game #42 against the current DB
+```
+
+Replays don't get re-saved (so the history doesn't balloon), and they
+re-run against whatever the current DB has — answer sets may differ
+slightly if the DB was rebuilt with newer data, but the question stays
+the same.
+
 ## Schema
 
 ```
@@ -266,11 +295,15 @@ Award types in `player_awards`:
 | `AP_FIRST`    | AP First-Team All-Pro                 | NULL (binary)         |
 | `AP_SECOND`   | AP Second-Team All-Pro                | NULL (binary)         |
 | `PB`          | Pro Bowl selection                    | NULL (binary)         |
+| `HOF`         | Pro Football Hall of Fame inductee    | NULL (binary)         |
 
 `--has-award MVP` matches the seasons the player won outright
 (`vote_finish = 1` for vote-ranked awards; any row for the binary ones).
 `--ever-won MVP` matches every season of any player who won MVP at any
-point in their career. Both flags are repeatable: pass `--has-award MVP
+point in their career. `HOF` is anchored at each inductee's last NFL
+season, sourced from PFR's "HOF" name suffix on draft pages plus a
+small curated `KNOWN_HOFERS` list for UDFAs (Cliff Harris, Warren
+Moon) and pre-1970 picks. Both flags are repeatable: pass `--has-award MVP
 --has-award OROY` for "won MVP OR OROY".
 
 `college` is canonicalized on `players.college`. Two sources:
@@ -385,7 +418,7 @@ don't redistribute scraped HTML.
 ## Development
 
 ```bash
-.venv/bin/pytest -q              # ~430 tests, all network-free
+.venv/bin/pytest -q              # ~440 tests, all network-free
 .venv/bin/pytest tests/test_pipeline.py -q     # end-to-end pipeline
 .venv/bin/pytest tests/test_cli_trivia.py tests/test_cli_new_commands.py -q
 ```
@@ -414,8 +447,9 @@ ffpts/
 ├── pipeline.py                build(seasons, ...) — all years through PFR;
 │                                applies college overrides last
 ├── supplemental_drafts.py     hand-encoded supp + pre-merger draft picks +
-│                                KNOWN_COLLEGE_OVERRIDES
+│                                KNOWN_COLLEGE_OVERRIDES + KNOWN_HOFERS
 ├── queries.py                 named helpers (pos_topN, career_topN, awards_list,
 │                                award_topN) + filter builder; player-season default
+├── trivia_replay.py           save/load trivia game specs for replay + history
 └── cli.py                     `fb_info build | query | ask | trivia`
 ```

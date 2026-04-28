@@ -33,8 +33,9 @@ from ffpts.ingest import build_team_seasons
 # `awards` is the raw PFR cell string carried through for the awards
 # ingest step; not stored on the wide stats fact table.
 _STATS_EXTRA_COLUMNS = {"name", "team_slug", "awards"}
-# Same idea for draft_picks.
-_DRAFT_EXTRA_COLUMNS = {"name", "position"}
+# Same idea for draft_picks. ``is_hof`` is consumed by
+# ``_insert_hof_awards`` and isn't a draft_picks column.
+_DRAFT_EXTRA_COLUMNS = {"name", "position", "is_hof"}
 
 
 def _upsert_players_from(con: duckdb.DuckDBPyConnection, staging_view: str) -> None:
@@ -238,6 +239,70 @@ def _populate_player_colleges(con: duckdb.DuckDBPyConnection) -> int:
     return affected
 
 
+def _insert_hof_awards(
+    con: duckdb.DuckDBPyConnection, drafts: pl.DataFrame
+) -> int:
+    """Record Hall of Fame inductees as ``player_awards`` rows with
+    ``award_type = 'HOF'``.
+
+    Two sources, deduped by player_id:
+
+      1. PFR's draft pages append "HOF" to inductee names (we parsed
+         that into ``drafts.is_hof``). Modern HOFers who came through
+         the regular NFL draft get auto-tagged via this path.
+      2. ``KNOWN_HOFERS`` curated list — fills UDFAs (Cliff Harris,
+         Warren Moon, John Randle, ...) and supplemental / pre-1970
+         picks where the suffix isn't on the draft.htm row.
+
+    Each HOFer gets one row per (player_id) keyed at their
+    final NFL season, ``vote_finish = NULL`` (binary award). Idempotent
+    via ON CONFLICT DO UPDATE so re-running build refreshes without
+    duplicating. Returns the count of HOF rows touched.
+    """
+    from ffpts.supplemental_drafts import KNOWN_HOFERS
+
+    seen_ids: set[str] = set()
+    affected = 0
+
+    # Source 1: auto-detected from draft data carried through this run.
+    if not drafts.is_empty() and "is_hof" in drafts.columns:
+        hof_rows = drafts.filter(pl.col("is_hof") == True).select(
+            ["player_id"]
+        ).unique()
+        for row in hof_rows.iter_rows(named=True):
+            seen_ids.add(row["player_id"])
+
+    # Source 2: curated list — name-lookup against players.
+    for name in KNOWN_HOFERS:
+        rows = con.execute(
+            "SELECT player_id FROM players WHERE name = ?", [name]
+        ).fetchall()
+        for (pid,) in rows:
+            seen_ids.add(pid)
+
+    for pid in seen_ids:
+        last_season = con.execute(
+            "SELECT MAX(season) FROM player_season_stats WHERE player_id = ?",
+            [pid],
+        ).fetchone()[0]
+        if last_season is None:
+            # No stats rows — skip (the v_award_winners view's INNER
+            # JOIN to players would still find them, but we can't
+            # anchor a season).
+            continue
+        con.execute(
+            """
+            INSERT INTO player_awards (player_id, season, award_type, vote_finish)
+            VALUES (?, ?, 'HOF', NULL)
+            ON CONFLICT (player_id, season, award_type) DO UPDATE SET
+                vote_finish = NULL
+            """,
+            [pid, last_season],
+        )
+        affected += 1
+    return affected
+
+
 def _insert_year_summary_awards(
     con: duckdb.DuckDBPyConnection, awards: pl.DataFrame
 ) -> None:
@@ -374,6 +439,12 @@ def build(
         # before we set college values on it.
         college_overrides = _populate_player_colleges(con)
 
+        # HOF inductees: derive player_awards rows from the auto-
+        # detected `is_hof` flag on the draft frame plus the curated
+        # KNOWN_HOFERS list. Runs after the per-season stats loop so
+        # MAX(season) lookups have data.
+        hof_rows = _insert_hof_awards(con, drafts)
+
         awards_total = con.execute(
             "SELECT COUNT(*) FROM player_awards"
         ).fetchone()[0]
@@ -384,6 +455,7 @@ def build(
             "draft_picks_rows": drafts.height,
             "supplemental_draft_rows": supp_count,
             "college_override_rows": college_overrides,
+            "hof_award_rows": hof_rows,
             "player_season_stats_rows": stats_count_by_season,
             "player_awards_rows": awards_total,
         }
