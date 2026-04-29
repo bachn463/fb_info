@@ -831,9 +831,11 @@ def _trivia_play_form_body() -> str:
 
 
 def _trivia_random_form_body() -> str:
-    pos_opts = _opts(_position_choices())
-    # rank_by leaves blank so the random gen picks if not pinned.
-    # Same trivia-rank-by restriction as the play form.
+    # Prepend a blank option so leaving the dropdown alone means
+    # "let the random gen pick a position" rather than pinning the
+    # first label that happens to be alphabetically / dict-order
+    # first. Same treatment as the rank_by select.
+    pos_opts = _opts([""] + _position_choices())
     rank_opts = _opts([""] + sorted(TRIVIA_RANK_BY_ALLOWED))
     award_opts = _opts([""] + sorted(AWARD_TYPES_ALLOWED))
     return f"""

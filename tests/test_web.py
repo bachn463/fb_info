@@ -496,6 +496,22 @@ def test_trivia_random_with_draft_rounds_filter(client):
     assert r.status_code in (200, 303), r.text
 
 
+def test_trivia_random_position_default_is_blank(client):
+    """The random-trivia form's position dropdown must lead with a
+    blank option — otherwise the first listed position (FLEX in
+    POSITION_ALIASES dict order) becomes a silent default pin and
+    the user thinks they're getting a random position when they're
+    not."""
+    r = client.get("/trivia/random")
+    assert r.status_code == 200
+    # The position select's first <option> should be the empty value
+    # (renders as "(any)"), not FLEX or any concrete position.
+    pos_section = r.text.split('name="position"', 1)[1]
+    # Look at the first option after the select opens.
+    first_option = pos_section.split("<option", 2)[1]
+    assert 'value=""' in first_option, f"first option was: {first_option!r}"
+
+
 def test_trivia_random_with_career_threshold(client):
     """Pass a career threshold + pinned career mode + rank-by; the
     handler should accept the form fields without error."""
