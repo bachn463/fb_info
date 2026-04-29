@@ -118,18 +118,6 @@ def test_ask_career_award_hof_lists_inductees(tmp_path):
     assert "Jerry Rice" in result.output
 
 
-def test_ask_awards_filter_by_hof_lists_inductees(tmp_path):
-    """`ask awards --award HOF` lists every HOF row (one per inductee
-    in our fixture)."""
-    db = tmp_path / "ff.duckdb"
-    _populated_db(db)
-    result = runner.invoke(
-        app, ["ask", "awards", "--award", "HOF", "--db", str(db)],
-    )
-    assert result.exit_code == 0, result.output
-    assert "HOF" in result.output
-
-
 # ---- Trivia replay ----
 
 def test_trivia_replay_persists_play_spec(tmp_path):

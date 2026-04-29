@@ -44,9 +44,11 @@ def test_home_renders(client):
 def test_ask_form_renders(client):
     r = client.get("/ask")
     assert r.status_code == 200
-    # All three kind options should appear in the form.
-    for kind in ("pos-top", "career", "awards"):
+    # Both top-level kinds should appear in the radio selector.
+    for kind in ("pos-top", "career"):
         assert kind in r.text
+    # The dropped `awards` kind should NOT be in the form.
+    assert ' value="awards"' not in r.text
 
 
 def test_trivia_index_renders(client):
@@ -82,49 +84,52 @@ def test_ask_career_award_query_returns_results(client):
     r = client.post(
         "/ask",
         data={
-            "kind":     "career",
-            "award":    "AP_FIRST",
-            "n":        "5",
-            "position": "ALL",
-            "rank_by":  "fpts_ppr",  # ignored when award is set
+            "kind":         "career",
+            "career_mode":  "award",
+            "career_award": "AP_FIRST",
+            "n":            "5",
+            "position":     "ALL",
         },
     )
     assert r.status_code == 200
     assert "award_count" in r.text or "AP_FIRST" in r.text
 
 
-def test_ask_awards_respects_n_limit(client):
-    """The awards form has an `n` field — it should cap the number
-    of awards rows returned, otherwise an unfiltered query on a real
-    DB returns thousands of rows and the page becomes unusable."""
+def test_ask_career_award_with_ever_won_composes(client):
+    """The user's motivating example: list of CPOY winners who also
+    won MVP. award_topN composes ever_won with the count rank, so
+    --career_mode=award + ever_won=MVP narrows to that intersection.
+    Just verify the handler runs cleanly — fixture is too sparse for
+    a content assertion."""
     r = client.post(
         "/ask",
         data={
-            "kind":     "awards",
-            "rank_by":  "fpts_ppr",
-            "n":        "5",
-            "position": "ALL",
+            "kind":         "career",
+            "career_mode":  "award",
+            "career_award": "CPOY",
+            "ever_won":     "MVP",
+            "n":            "10",
+            "position":     "ALL",
         },
     )
     assert r.status_code == 200
-    # 5 data rows + 1 header row.
-    assert r.text.count("<tr>") <= 6
 
 
-def test_ask_awards_query_lists_winners(client):
+def test_ask_career_award_with_year_range_composes(client):
+    """start/end on award-mode counts only wins inside that range."""
     r = client.post(
         "/ask",
         data={
-            "kind":   "awards",
-            "award":  "MVP",
-            "rank_by": "fpts_ppr",   # default, ignored
-            "n":      "10",          # default, ignored
-            "position": "ALL",
+            "kind":         "career",
+            "career_mode":  "award",
+            "career_award": "MVP",
+            "start":        "2010",
+            "end":          "2024",
+            "n":            "5",
+            "position":     "ALL",
         },
     )
     assert r.status_code == 200
-    # 1985 fixture has Marino runner-up but Marcus Allen won. Either
-    # way the page renders without error.
 
 
 # ---- Trivia: full game flow ----
@@ -348,6 +353,50 @@ def test_trivia_random_with_ever_won_hof_pin(client):
         follow_redirects=False,
     )
     assert r.status_code in (200, 303), r.text
+
+
+def test_ask_form_has_radio_kind_selector(client):
+    """The kind toggle should be radio buttons, not a dropdown."""
+    r = client.get("/ask")
+    assert r.status_code == 200
+    assert 'type="radio" name="kind" value="pos-top"' in r.text
+    assert 'type="radio" name="kind" value="career"' in r.text
+    # Career sub-mode is also a radio.
+    assert 'type="radio" name="career_mode" value="rank_by"' in r.text
+    assert 'type="radio" name="career_mode" value="award"' in r.text
+
+
+def test_ask_form_exposes_full_cli_option_set(client):
+    """Every CLI option that was missing from the web should now be
+    in the /ask form."""
+    r = client.get("/ask")
+    assert r.status_code == 200
+    for name in (
+        "drafted_by", "draft_start", "draft_end",
+        "tiebreak_by", "show_awards", "show_context",
+        "career_mode", "career_award", "career_rank_by",
+        "min_seasons",
+    ):
+        assert f'name="{name}"' in r.text, f"missing on /ask: {name}"
+
+
+def test_ask_pos_top_show_awards_appends_column(client):
+    r = client.post(
+        "/ask",
+        data={
+            "kind":         "pos-top",
+            "rank_by":      "rush_yds",
+            "n":            "3",
+            "position":     "RB",
+            "start":        "1985",
+            "end":          "1985",
+            "show_awards":  "1",
+            "career_rank_by": "fpts_ppr",   # form default; ignored
+        },
+    )
+    assert r.status_code == 200
+    # The augment-display path adds an "awards" column header.
+    assert "<th>awards</th>" in r.text or ">awards<" in r.text
 
 
 def test_all_three_forms_expose_draft_rounds(client):

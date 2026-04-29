@@ -545,6 +545,8 @@ def career_topN(
     drafted_by: str | None = None,
     first_name_contains: str | None = None,
     last_name_contains: str | None = None,
+    draft_start: int | None = None,
+    draft_end: int | None = None,
 ) -> tuple[str, list]:
     """Top-N players by *career-total* of ``rank_by`` summed across the
     seasons matching the (optional) filters.
@@ -650,6 +652,14 @@ def career_topN(
     if drafted_by:
         where.append("d.team = ?")
         params.append(drafted_by.upper())
+
+    # Draft year range — same draft_picks LEFT JOIN.
+    if draft_start is not None:
+        where.append("d.year >= ?")
+        params.append(draft_start)
+    if draft_end is not None:
+        where.append("d.year <= ?")
+        params.append(draft_end)
 
     # Name greps — same split-on-first-space convention as pos_topN.
     if first_name_contains:
@@ -794,25 +804,41 @@ def award_topN(
     college: str | None = None,
     min_career_stats: dict[str, float] | None = None,
     max_career_stats: dict[str, float] | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    ever_won_award: list[str] | None = None,
+    draft_rounds: list[int | str] | None = None,
+    draft_start: int | None = None,
+    draft_end: int | None = None,
+    drafted_by: str | None = None,
+    first_name_contains: str | None = None,
+    last_name_contains: str | None = None,
 ) -> tuple[str, list]:
     """Top-N players by career *count* of a single award type.
 
     Outright winners only — vote_finish=1 for vote-ranked awards
     (MVP/OPOY/...) plus all rows for binary awards (PB, AP_FIRST,
-    AP_SECOND, WPMOY) which carry NULL vote_finish. Finalist credit
-    is intentionally excluded.
+    AP_SECOND, WPMOY, HOF) which carry NULL vote_finish. Finalist
+    credit is intentionally excluded.
 
     Filters compose:
-      - ``position`` scopes to players whose stats include any season
-        at that position (or alias group: SAFETY, DB, LB, DL, FLEX).
-      - ``college`` substring-matches draft_picks.college.
-      - ``min_career_stats`` / ``max_career_stats`` apply HAVING-style
-        thresholds on career SUMs. Ratio stats (pass_cmp_pct,
-        catch_rate) recompute as SUM(num)/NULLIF(SUM(den), 0) so
-        divide-by-zero is impossible.
+      - ``position`` / ``college`` / ``min_career_stats`` /
+        ``max_career_stats`` — same semantics as career_topN.
+      - ``start`` / ``end`` — only seasons in [start, end] count
+        toward the award_count. e.g. start=2010 ranks players by
+        their 2010+ MVP count, ignoring earlier wins.
+      - ``ever_won_award`` — restrict to players who also won the
+        listed award(s) at any point in their career. Composes —
+        e.g. "list of CPOY winners who also won MVP".
+      - ``draft_rounds`` / ``draft_start`` / ``draft_end`` /
+        ``drafted_by`` — same semantics as the corresponding
+        pos_topN / career_topN filters.
+      - ``first_name_contains`` / ``last_name_contains`` — same
+        split-on-first-space substring match as the rest of the
+        helpers.
 
     Output columns: ``name, positions, teams, college, award_count,
-    seasons``.
+    award_seasons``.
     """
     if award_type not in AWARD_TYPES_ALLOWED:
         raise ValueError(
@@ -825,6 +851,15 @@ def award_topN(
         "(pa.vote_finish = 1 OR pa.vote_finish IS NULL)",
     ]
     params: list = [award_type]
+
+    # Season range — applied directly to pa.season so only wins
+    # inside the range count toward award_count.
+    if start is not None:
+        where.append("pa.season >= ?")
+        params.append(start)
+    if end is not None:
+        where.append("pa.season <= ?")
+        params.append(end)
 
     # Position via EXISTS on player_season_stats. Award winners with
     # no stats row (linemen WPMOY etc.) are excluded by the EXISTS,
@@ -855,6 +890,96 @@ def award_topN(
             "AND d.college ILIKE ?)"
         )
         params.append(f"%{college}%")
+
+    # ever_won — composes naturally: "rank by CPOY count, restricted
+    # to players who also won MVP". Same winners-only semantics as
+    # the pos_topN / career_topN versions.
+    if ever_won_award:
+        normalized: list[str] = []
+        for a in ever_won_award:
+            label = str(a).upper()
+            if label not in AWARD_TYPES_ALLOWED:
+                raise ValueError(
+                    f"unknown ever_won_award {a!r}; allowed: "
+                    f"{sorted(AWARD_TYPES_ALLOWED)}"
+                )
+            normalized.append(label)
+        ph = ",".join(["?"] * len(normalized))
+        where.append(
+            "EXISTS (SELECT 1 FROM player_awards pa2 "
+            "WHERE pa2.player_id = pa.player_id "
+            f"AND pa2.award_type IN ({ph}) "
+            "AND (pa2.vote_finish = 1 OR pa2.vote_finish IS NULL))"
+        )
+        params.extend(normalized)
+
+    # Draft-round bucket — same semantics as pos_topN. Filters via
+    # EXISTS on draft_picks (or NOT EXISTS for the "undrafted" token).
+    if draft_rounds:
+        int_rounds: list[int] = []
+        include_undrafted = False
+        for entry in draft_rounds:
+            if isinstance(entry, str) and entry.lower() == "undrafted":
+                include_undrafted = True
+            elif isinstance(entry, int) and not isinstance(entry, bool):
+                int_rounds.append(entry)
+            else:
+                raise ValueError(
+                    f"draft_rounds entries must be ints or 'undrafted', got: {entry!r}"
+                )
+        clauses: list[str] = []
+        if int_rounds:
+            ph = ",".join(["?"] * len(int_rounds))
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM draft_picks d "
+                f"WHERE d.player_id = pa.player_id AND d.round IN ({ph}))"
+            )
+            params.extend(int_rounds)
+        if include_undrafted:
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM draft_picks d "
+                "WHERE d.player_id = pa.player_id)"
+            )
+        if clauses:
+            where.append("(" + " OR ".join(clauses) + ")")
+
+    if drafted_by:
+        where.append(
+            "EXISTS (SELECT 1 FROM draft_picks d "
+            "WHERE d.player_id = pa.player_id AND d.team = ?)"
+        )
+        params.append(drafted_by.upper())
+
+    if draft_start is not None:
+        where.append(
+            "EXISTS (SELECT 1 FROM draft_picks d "
+            "WHERE d.player_id = pa.player_id AND d.year >= ?)"
+        )
+        params.append(draft_start)
+    if draft_end is not None:
+        where.append(
+            "EXISTS (SELECT 1 FROM draft_picks d "
+            "WHERE d.player_id = pa.player_id AND d.year <= ?)"
+        )
+        params.append(draft_end)
+
+    # Name greps via JOIN on players (we already JOIN later for the
+    # SELECT name; here we add a where-side EXISTS to avoid changing
+    # the GROUP BY shape).
+    if first_name_contains:
+        where.append(
+            "EXISTS (SELECT 1 FROM players p2 "
+            "WHERE p2.player_id = pa.player_id "
+            "AND split_part(p2.name, ' ', 1) ILIKE ?)"
+        )
+        params.append(f"%{first_name_contains}%")
+    if last_name_contains:
+        where.append(
+            "EXISTS (SELECT 1 FROM players p2 "
+            "WHERE p2.player_id = pa.player_id "
+            "AND trim(substr(p2.name, length(split_part(p2.name, ' ', 1)) + 1)) ILIKE ?)"
+        )
+        params.append(f"%{last_name_contains}%")
 
     career_clauses, career_params = _career_min_max_subquery_clauses(
         min_career_stats, max_career_stats

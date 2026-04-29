@@ -28,7 +28,6 @@ from ffpts.queries import (
     RANK_BY_ALLOWED,
     TRIVIA_RANK_BY_ALLOWED,
     award_topN,
-    awards_list,
     career_topN,
     pos_topN,
 )
@@ -1133,6 +1132,14 @@ def ask_career(
         None, "--last-name-contains",
         help="Case-insensitive substring match on last name.",
     ),
+    draft_start: int | None = typer.Option(
+        None, "--draft-start",
+        help="Filter to players drafted in or after this year.",
+    ),
+    draft_end: int | None = typer.Option(
+        None, "--draft-end",
+        help="Filter to players drafted in or before this year.",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
 ) -> None:
     """Top-N players by career value of either a stat sum (--rank-by)
@@ -1143,9 +1150,11 @@ def ask_career(
     recompute from the underlying numerator / denominator.
 
     --award mode: COUNT(*) of player_awards rows of that type
-    (outright winners only). Composes with position, college, and
-    career stat min/max filters; the rest are silently ignored
-    because the underlying award_topN helper doesn't accept them.
+    (outright winners only). Composes with position, college, career
+    stat thresholds, year range, ever-won, draft filters, and name
+    contains. e.g. `--award CPOY --ever-won MVP` lists CPOY winners
+    who also won MVP at some point. min-seasons is silently dropped
+    in --award mode (it's a career-stat concept).
     """
     rounds_list: list[int | str] | None = None
     if draft_rounds:
@@ -1169,15 +1178,21 @@ def ask_career(
     max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
 
     if award:
-        # Award-count ranking. award_topN accepts a smaller filter
-        # set than career_topN — start/end, ever_won, min_seasons,
-        # draft_rounds, drafted_by, first/last_name_contains all get
-        # silently dropped here. The user's --award flag wins.
+        # Award-count ranking. award_topN now composes with the same
+        # filters career_topN does (except min_seasons, which is a
+        # career-stat concept and doesn't apply to award counts).
         sql, params = award_topN(
             award, n=n, position=position,
             college=college,
             min_career_stats=min_career_dict if min_career_dict else None,
             max_career_stats=max_career_dict if max_career_dict else None,
+            start=start, end=end,
+            ever_won_award=ever_won if ever_won else None,
+            draft_rounds=rounds_list,
+            draft_start=draft_start, draft_end=draft_end,
+            drafted_by=drafted_by,
+            first_name_contains=first_name_contains,
+            last_name_contains=last_name_contains,
         )
     else:
         sql, params = career_topN(
@@ -1192,6 +1207,7 @@ def ask_career(
             drafted_by=drafted_by,
             first_name_contains=first_name_contains,
             last_name_contains=last_name_contains,
+            draft_start=draft_start, draft_end=draft_end,
         )
     con = _open_db(db)
     try:
@@ -1202,47 +1218,6 @@ def ask_career(
         con.close()
 
 
-# ---------------------------------------------------------------------------
-# `ask awards` — list winners by award type / season
-# ---------------------------------------------------------------------------
-
-@ask_app.command("awards")
-def ask_awards(
-    award: str | None = typer.Option(
-        None, "--award",
-        help="Award type to list. One of: " + ", ".join(sorted(AWARD_TYPES_ALLOWED)),
-    ),
-    season: int | None = typer.Option(
-        None, "--season",
-        help="Restrict to one season (e.g. 2023).",
-    ),
-    winners_only: bool = typer.Option(
-        True, "--winners-only/--include-finalists",
-        help="Default ON: outright winners only. Pass "
-             "--include-finalists to see runner-ups for vote-ranked "
-             "awards (MVP, OPOY, DPOY, OROY, DROY, CPOY).",
-    ),
-    n: int | None = typer.Option(
-        None, "--n",
-        help="Cap result rows. Default unlimited; useful when the "
-             "filter set returns thousands (e.g. all PB winners across "
-             "1970-2025).",
-    ),
-    db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
-) -> None:
-    """List award winners. Defaults to all awards across all seasons
-    (winners only); pass --award and/or --season to scope down."""
-    sql, params = awards_list(
-        award_type=award, season=season, winners_only=winners_only,
-        limit=n,
-    )
-    con = _open_db(db)
-    try:
-        cur = con.execute(sql, params)
-        cols = [d[0] for d in cur.description]
-        _print_rows(cur.fetchall(), cols)
-    finally:
-        con.close()
 
 
 # ---------------------------------------------------------------------------

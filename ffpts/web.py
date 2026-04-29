@@ -35,7 +35,6 @@ from ffpts.queries import (
     RANK_BY_ALLOWED,
     TRIVIA_RANK_BY_ALLOWED,
     award_topN,
-    awards_list,
     career_topN,
     pos_topN,
 )
@@ -72,52 +71,79 @@ def _make_app(db_path: Path) -> FastAPI:
 
     @app.post("/ask", response_class=HTMLResponse)
     def ask_submit(
+        # Top-level kind toggle (radio).
         kind: str = Form("pos-top"),
-        rank_by: str = Form("fpts_ppr"),
+        # Shared filters (apply to both kinds).
         n: int = Form(10),
         position: str = Form("ALL"),
         start: str = Form(""),
         end: str = Form(""),
+        college: str = Form(""),
+        first_name_contains: str = Form(""),
+        last_name_contains: str = Form(""),
+        draft_rounds: str = Form(""),
+        drafted_by: str = Form(""),
+        draft_start: str = Form(""),
+        draft_end: str = Form(""),
+        ever_won: str = Form(""),
+        min_career_stat: str = Form(""),
+        max_career_stat: str = Form(""),
+        # pos-top only.
+        rank_by: str = Form("fpts_ppr"),
         team: str = Form(""),
         division: str = Form(""),
         conference: str = Form(""),
         has_award: str = Form(""),
-        ever_won: str = Form(""),
         rookie_only: str = Form(""),
-        college: str = Form(""),
-        first_name_contains: str = Form(""),
-        last_name_contains: str = Form(""),
-        award: str = Form(""),
-        season: str = Form(""),
         unique: str = Form(""),
         min_stat: str = Form(""),
         max_stat: str = Form(""),
-        min_career_stat: str = Form(""),
-        max_career_stat: str = Form(""),
-        draft_rounds: str = Form(""),
+        tiebreak_by: str = Form(""),
+        show_awards: str = Form(""),
+        show_context: str = Form(""),
+        # career only.
+        career_mode: str = Form("rank_by"),
+        career_rank_by: str = Form("fpts_ppr"),
+        career_award: str = Form(""),
+        min_seasons: str = Form(""),
     ) -> str:
         try:
             cols, rows, label = _run_ask(
                 db_path,
                 kind=kind,
-                rank_by=rank_by, n=n, position=position,
+                # shared
+                n=n, position=position,
                 start=_int_or_none(start), end=_int_or_none(end),
-                team=team or None, division=division or None,
-                conference=conference or None,
-                has_award=[has_award] if has_award else None,
-                ever_won=[ever_won] if ever_won else None,
-                rookie_only=bool(rookie_only),
                 college=college or None,
                 first_name_contains=first_name_contains or None,
                 last_name_contains=last_name_contains or None,
-                award=award or None,
-                season=_int_or_none(season),
+                draft_rounds=_parse_draft_rounds_form(draft_rounds),
+                drafted_by=drafted_by or None,
+                draft_start=_int_or_none(draft_start),
+                draft_end=_int_or_none(draft_end),
+                ever_won=[ever_won] if ever_won else None,
+                min_career_stats=_parse_stat_pair_form(min_career_stat) or None,
+                max_career_stats=_parse_stat_pair_form(max_career_stat) or None,
+                # pos-top only
+                rank_by=rank_by,
+                team=team or None,
+                division=division or None,
+                conference=conference or None,
+                has_award=[has_award] if has_award else None,
+                rookie_only=bool(rookie_only),
                 unique=bool(unique),
                 min_stats=_parse_stat_pair_form(min_stat) or None,
                 max_stats=_parse_stat_pair_form(max_stat) or None,
-                min_career_stats=_parse_stat_pair_form(min_career_stat) or None,
-                max_career_stats=_parse_stat_pair_form(max_career_stat) or None,
-                draft_rounds=_parse_draft_rounds_form(draft_rounds),
+                tiebreak_by=[
+                    t.strip() for t in tiebreak_by.split(",") if t.strip()
+                ] or None,
+                show_awards=bool(show_awards),
+                show_context=bool(show_context),
+                # career only
+                career_mode=career_mode,
+                career_rank_by=career_rank_by,
+                career_award=career_award or None,
+                min_seasons=_int_or_none(min_seasons),
             )
         except Exception as e:
             # Catch broadly — a malformed filter (e.g. a min-stat value
@@ -363,30 +389,48 @@ def _parse_stat_pair_form(s: str) -> dict[str, float]:
 
 def _run_ask(
     db_path: Path,
-    *, kind: str, rank_by: str, n: int, position: str,
+    *, kind: str,
+    # shared
+    n: int, position: str,
     start: int | None, end: int | None,
-    team: str | None, division: str | None, conference: str | None,
-    has_award: list[str] | None, ever_won: list[str] | None,
-    rookie_only: bool,
     college: str | None,
     first_name_contains: str | None, last_name_contains: str | None,
-    award: str | None, season: int | None,
-    unique: bool,
-    min_stats: dict[str, float] | None = None,
-    max_stats: dict[str, float] | None = None,
+    draft_rounds: list[int | str] | None,
+    drafted_by: str | None,
+    draft_start: int | None, draft_end: int | None,
+    ever_won: list[str] | None,
     min_career_stats: dict[str, float] | None = None,
     max_career_stats: dict[str, float] | None = None,
-    draft_rounds: list[int | str] | None = None,
+    # pos-top only
+    rank_by: str = "fpts_ppr",
+    team: str | None = None,
+    division: str | None = None,
+    conference: str | None = None,
+    has_award: list[str] | None = None,
+    rookie_only: bool = False,
+    unique: bool = False,
+    min_stats: dict[str, float] | None = None,
+    max_stats: dict[str, float] | None = None,
+    tiebreak_by: list[str] | None = None,
+    show_awards: bool = False,
+    show_context: bool = False,
+    # career only
+    career_mode: str = "rank_by",
+    career_rank_by: str = "fpts_ppr",
+    career_award: str | None = None,
+    min_seasons: int | None = None,
 ) -> tuple[list[str], list[tuple], str]:
-    """Run the named ask helper and return (columns, rows, page_label).
+    """Run the chosen ask helper and return (columns, rows, page_label).
 
-    ``kind`` selects which helper:
-      pos-top  -> pos_topN — accepts min_stats/max_stats (per-season
-                  thresholds) and min_career_stats/max_career_stats
-                  (HAVING-style on career SUMs).
-      career   -> career_topN (or award_topN when --award is set);
-                  career-stat thresholds compose with both modes.
-      awards   -> awards_list — stat thresholds don't apply.
+    ``kind`` selects which top-level helper:
+      pos-top -> pos_topN — single-season top-N with all filters;
+                 supports show_awards / show_context column augmentation.
+      career  -> dispatched on career_mode:
+                   "rank_by" (default) -> career_topN with SUM(stat).
+                   "award"             -> award_topN with COUNT(*).
+                 Career stat thresholds, year range, college, draft
+                 filters, ever-won, and name contains compose with both
+                 sub-modes; min_seasons applies only to rank_by mode.
     """
     con = _open_db(db_path)
     try:
@@ -404,22 +448,46 @@ def _run_ask(
                 min_career_stats=min_career_stats,
                 max_career_stats=max_career_stats,
                 draft_rounds=draft_rounds,
+                draft_start=draft_start, draft_end=draft_end,
+                drafted_by=drafted_by,
+                tiebreak_by=tiebreak_by,
             )
             label = (
                 f"pos-top: top {n} {position} by {rank_by}"
                 + (f" ({start}-{end})" if start and end else "")
             )
+            cur = con.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            if show_awards or show_context:
+                # Reuse the CLI's _augment_display so the same
+                # award-aggregation + team-context join logic works
+                # for the web. Keeps both surfaces aligned.
+                from ffpts.cli import _augment_display
+                rows, cols = _augment_display(con, rows, cols, show_awards, show_context)
         elif kind == "career":
-            if award:
+            if career_mode == "award":
+                if not career_award:
+                    raise ValueError(
+                        "career sub-mode 'award' requires an award type."
+                    )
                 sql, params = award_topN(
-                    award, n=n, position=position, college=college,
+                    career_award, n=n, position=position,
+                    college=college,
                     min_career_stats=min_career_stats,
                     max_career_stats=max_career_stats,
+                    start=start, end=end,
+                    ever_won_award=ever_won,
+                    draft_rounds=draft_rounds,
+                    drafted_by=drafted_by,
+                    draft_start=draft_start, draft_end=draft_end,
+                    first_name_contains=first_name_contains,
+                    last_name_contains=last_name_contains,
                 )
-                label = f"career: top {n} {position} by {award} count"
+                label = f"career: top {n} {position} by {career_award} count"
             else:
                 sql, params = career_topN(
-                    rank_by, n=n, position=position,
+                    career_rank_by, n=n, position=position,
                     start=start, end=end,
                     ever_won_award=ever_won, college=college,
                     first_name_contains=first_name_contains,
@@ -427,24 +495,16 @@ def _run_ask(
                     min_career_stats=min_career_stats,
                     max_career_stats=max_career_stats,
                     draft_rounds=draft_rounds,
+                    drafted_by=drafted_by,
+                    draft_start=draft_start, draft_end=draft_end,
+                    min_seasons=min_seasons,
                 )
-                label = f"career: top {n} {position} by SUM({rank_by})"
-        elif kind == "awards":
-            sql, params = awards_list(
-                award_type=award or None, season=season, winners_only=True,
-                limit=n,
-            )
-            label = (
-                "awards: "
-                + (f"{award} winners" if award else "all winners")
-                + (f" in {season}" if season else "")
-                + f" (top {n})"
-            )
+                label = f"career: top {n} {position} by SUM({career_rank_by})"
+            cur = con.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
         else:
             raise ValueError(f"unknown kind {kind!r}")
-        cur = con.execute(sql, params)
-        cols = [d[0] for d in cur.description]
-        rows = cur.fetchall()
     finally:
         con.close()
     return cols, rows, label
@@ -617,48 +677,91 @@ def _ask_form_body() -> str:
     pos_opts = _opts(_position_choices())
     rank_opts = _opts(sorted(RANK_BY_ALLOWED))
     award_opts = _opts([""] + sorted(AWARD_TYPES_ALLOWED))
+    # Two top-level kinds — pos-top and career. The radio toggle
+    # drives a tiny inline JS that hides/shows the kind-specific
+    # fieldset. Without JS the user just sees both and the handler
+    # dispatches on `kind`.
     return f"""
-<p>Run a single query. <em>kind=pos-top</em> ranks player-seasons,
-<em>kind=career</em> ranks players by career total (or career
-<em>--award</em> count), <em>kind=awards</em> lists raw award rows.</p>
+<p>Run a single query. Pick <em>pos-top</em> to rank player-seasons,
+or <em>career</em> to rank players by career total (or career award
+count).</p>
 <form method="post" action="/ask">
-  <p>kind:
-    <select name="kind">
-      <option value="pos-top">pos-top (player-season)</option>
-      <option value="career">career (sum or award count)</option>
-      <option value="awards">awards (list winners)</option>
-    </select>
+  <p style="font-size:1.2em">
+    <label><input type="radio" name="kind" value="pos-top" checked
+                  onchange="_kindToggle()"> <b>pos-top</b></label>
+    &nbsp;&nbsp;&nbsp;
+    <label><input type="radio" name="kind" value="career"
+                  onchange="_kindToggle()"> <b>career</b></label>
   </p>
-  <p>rank-by: <select name="rank_by">{rank_opts}</select>
-     n: <input type="number" name="n" value="10" min="1" max="200" size="4"></p>
-  <p>position: <select name="position">{pos_opts}</select></p>
-  <p>start: <input type="number" name="start" placeholder="1970" size="6">
-     end:   <input type="number" name="end"   placeholder="2025" size="6"></p>
-  <p>team: <input name="team" placeholder="PIT" size="6">
-     division: <input name="division" placeholder="NFC North" size="14">
-     conference: <input name="conference" placeholder="AFC" size="6"></p>
-  <p>has-award (this season): <select name="has_award">{award_opts}</select>
-     ever-won (any season):   <select name="ever_won">{award_opts}</select></p>
-  <p>award (career mode count, or awards-list filter): <select name="award">{award_opts}</select>
-     season (awards mode only): <input type="number" name="season" size="6"></p>
-  <p>college: <input name="college" placeholder="Alabama" size="14">
-     first-name has: <input name="first_name_contains" size="8">
-     last-name has:  <input name="last_name_contains" size="8"></p>
-  <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22">
-     <small>(comma-separated round numbers and/or "undrafted")</small></p>
-  <p>min-stat: <input name="min_stat" placeholder="games=10" size="14">
-     max-stat: <input name="max_stat" placeholder="rush_yds=999" size="14">
-     <small>(pos-top: per-season; col=value)</small></p>
-  <p>min-career-stat: <input name="min_career_stat" placeholder="pass_yds=20000" size="16">
-     max-career-stat: <input name="max_career_stat" placeholder="def_int=30" size="16">
-     <small>(pos-top + career: career SUMs)</small></p>
-  <p>
-    <label><input type="checkbox" name="rookie_only" value="1"> rookie-only</label>
-    &nbsp;
-    <label><input type="checkbox" name="unique" value="1"> unique-by-player (best season)</label>
-  </p>
-  <p><input type="submit" value="run"></p>
+
+  <fieldset><legend>shared</legend>
+    <p>n: <input type="number" name="n" value="10" min="1" max="200" size="4">
+       position: <select name="position">{pos_opts}</select></p>
+    <p>start: <input type="number" name="start" placeholder="1970" size="6">
+       end:   <input type="number" name="end"   placeholder="2025" size="6"></p>
+    <p>college: <input name="college" placeholder="Alabama" size="14">
+       first-name has: <input name="first_name_contains" size="8">
+       last-name has:  <input name="last_name_contains" size="8"></p>
+    <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22">
+       drafted-by: <input name="drafted_by" placeholder="PIT" size="6"></p>
+    <p>draft-start: <input type="number" name="draft_start" size="6">
+       draft-end:   <input type="number" name="draft_end" size="6"></p>
+    <p>ever-won (any season): <select name="ever_won">{award_opts}</select>
+       <small>(applies to both kinds; e.g. CPOY winners who also won MVP)</small></p>
+    <p>min-career-stat: <input name="min_career_stat" placeholder="pass_yds=20000" size="16">
+       max-career-stat: <input name="max_career_stat" placeholder="def_int=30" size="16">
+       <small>(career SUM threshold; both kinds)</small></p>
+  </fieldset>
+
+  <fieldset id="kind-pos-top"><legend>pos-top only</legend>
+    <p>rank-by: <select name="rank_by">{rank_opts}</select></p>
+    <p>team: <input name="team" placeholder="PIT" size="6">
+       division: <input name="division" placeholder="NFC North" size="14">
+       conference: <input name="conference" placeholder="AFC" size="6"></p>
+    <p>has-award (this season): <select name="has_award">{award_opts}</select></p>
+    <p>min-stat: <input name="min_stat" placeholder="games=10" size="14">
+       max-stat: <input name="max_stat" placeholder="rush_yds=999" size="14">
+       <small>(per-season threshold)</small></p>
+    <p>tiebreak-by (comma-separated): <input name="tiebreak_by" placeholder="draft_year,draft_round" size="22"></p>
+    <p>
+      <label><input type="checkbox" name="rookie_only" value="1"> rookie-only</label>
+      &nbsp;
+      <label><input type="checkbox" name="unique" value="1"> unique-by-player (best season)</label>
+    </p>
+    <p>
+      <label><input type="checkbox" name="show_awards" value="1"> show awards column</label>
+      &nbsp;
+      <label><input type="checkbox" name="show_context" value="1"> show conf/div/franchise</label>
+    </p>
+  </fieldset>
+
+  <fieldset id="kind-career"><legend>career only</legend>
+    <p>sub-mode:
+      <label><input type="radio" name="career_mode" value="rank_by" checked> rank by stat sum</label>
+      &nbsp;
+      <label><input type="radio" name="career_mode" value="award"> rank by award count</label>
+    </p>
+    <p>rank-by stat: <select name="career_rank_by">{rank_opts}</select>
+       <small>(used when sub-mode = rank by stat sum)</small></p>
+    <p>award: <select name="career_award">{award_opts}</select>
+       <small>(used when sub-mode = rank by award count; e.g. AP_FIRST or HOF)</small></p>
+    <p>min-seasons: <input type="number" name="min_seasons" size="4">
+       <small>(blocks one-year-wonders; rank-by mode only)</small></p>
+  </fieldset>
+
+  <p><input type="submit" value="run" style="font-size:1.1em"></p>
 </form>
+
+<script>
+// Tiny toggle so only the relevant fieldset shows. No build step,
+// no framework — radio buttons drive the visibility directly.
+function _kindToggle() {{
+  var kind = document.querySelector('input[name="kind"]:checked').value;
+  document.getElementById('kind-pos-top').style.display = (kind === 'pos-top') ? '' : 'none';
+  document.getElementById('kind-career').style.display  = (kind === 'career')  ? '' : 'none';
+}}
+_kindToggle();
+</script>
 """
 
 

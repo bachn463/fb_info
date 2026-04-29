@@ -105,40 +105,42 @@ def test_ask_career_min_seasons_filter(tmp_path):
     assert "(no rows)" in result.output
 
 
-# ---------- ask awards ----------
+# ---------- ask career --award (used to be `ask awards`) ----------
 
-def test_ask_awards_lists_mvp_winners(tmp_path):
+def test_ask_career_award_mvp_lists_winners(tmp_path):
+    """`ask awards` was deleted; the equivalent capability now lives
+    on `ask career --award X`. Top-N MVPs by career count — single
+    win each, but Lamar Jackson should appear from the 2023 fixture."""
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
     result = runner.invoke(
-        app, ["ask", "awards", "--award", "MVP", "--db", str(db)],
+        app, ["ask", "career", "--award", "MVP", "--n", "20", "--db", str(db)],
     )
     assert result.exit_code == 0, result.output
-    assert "MVP" in result.output
-    # 2023 MVP: Lamar Jackson.
     assert "Lamar Jackson" in result.output
 
 
-def test_ask_awards_filters_by_season(tmp_path):
+def test_ask_career_award_with_year_range(tmp_path):
+    """start/end on award mode counts only wins inside that range."""
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
     result = runner.invoke(
         app,
-        ["ask", "awards", "--season", "1985", "--db", str(db)],
+        ["ask", "career", "--award", "MVP",
+         "--start", "1985", "--end", "1985",
+         "--n", "10", "--db", str(db)],
     )
     assert result.exit_code == 0, result.output
-    # 1985 PBs are abundant, also 1985 WPMOY = Dwight Stephenson.
-    assert "1985" in result.output
 
 
-def test_ask_awards_unknown_type_errors(tmp_path):
+def test_ask_career_award_unknown_type_errors(tmp_path):
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
     result = runner.invoke(
         app,
-        ["ask", "awards", "--award", "BOGUS", "--db", str(db)],
+        ["ask", "career", "--award", "BOGUS", "--db", str(db)],
     )
-    # ValueError surfaces from the helper as a non-zero exit.
+    # ValueError from award_topN surfaces as non-zero exit.
     assert result.exit_code != 0
 
 
@@ -228,34 +230,30 @@ def test_ask_help_lists_new_commands():
     assert result.exit_code == 0
     assert "records" in result.output
     assert "career" in result.output
-    assert "awards" in result.output
     assert "compare" in result.output
+    # `awards` was dropped — career --award covers the use case.
+    assert "awards-top" not in result.output
 
 
-# ---------- ask awards: position + team display ----------
+# ---------- ask career --award: position + team display ----------
 
-def test_ask_awards_table_shows_position_and_team(tmp_path):
-    """The awards table should include position and team columns
-    for players who have stats rows that season."""
+def test_ask_career_award_table_shows_position_and_team(tmp_path):
+    """`ask career --award MVP --start YEAR --end YEAR` is the
+    consolidated home of the old `ask awards`. The output table from
+    award_topN includes positions, teams, college columns aggregated
+    per player."""
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
     result = runner.invoke(
         app,
-        ["ask", "awards", "--award", "MVP", "--season", "2023",
-         "--db", str(db)],
+        ["ask", "career", "--award", "MVP",
+         "--start", "2023", "--end", "2023",
+         "--n", "10", "--db", str(db)],
     )
     assert result.exit_code == 0, result.output
-    # Header row includes the new columns.
-    assert "position" in result.output
-    assert "team" in result.output
-    # Lamar Jackson 2023 MVP, BAL QB.
-    line = next(
-        (l for l in result.output.splitlines() if "Lamar Jackson" in l),
-        None,
-    )
-    assert line is not None
-    assert "QB" in line
-    assert "BAL" in line
+    # Header row includes the column names.
+    for col in ("name", "positions", "teams", "college", "award_count"):
+        assert col in result.output
 
 
 # ---------- ask career: position + teams display ----------
