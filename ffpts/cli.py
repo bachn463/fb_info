@@ -1516,7 +1516,7 @@ _RANDOM_DIVISIONS: list[str] = [
 _RANDOM_CONFERENCES: list[str] = ["AFC", "NFC"]
 _RANDOM_AWARDS: list[str] = [
     "MVP", "OPOY", "DPOY", "OROY", "DROY", "CPOY",
-    "PB", "AP_FIRST",
+    "PB", "AP_FIRST", "AP_SECOND", "HOF",
 ]
 _RANDOM_N_CHOICES: list[int] = [5, 5, 10, 10, 10, 15]
 

@@ -6,13 +6,13 @@ returns) plus draft, team-season metadata (conference, division,
 franchise, W/L), per-player **college** (with hand-curated overrides
 for transfers / UDFAs / supplemental picks), and **per-season awards**
 (MVP, OPOY, DPOY, OROY, DROY, CPOY, WPMOY, Pro Bowl, AP First/Second-
-Team All-Pro). **Std / Half-PPR / PPR fantasy points** are computed
-in-pipeline for skill-position players (QB / RB / WR / TE).
+Team All-Pro, Hall of Fame). **Std / Half-PPR / PPR fantasy points**
+are computed in-pipeline for skill-position players (QB / RB / WR / TE).
 
 Storage is [DuckDB][duckdb]; query surface is raw SQL plus a small
-library of named helpers (player-season top-N, career totals, awards
-listings, two-player comparisons, single-season records) — and an
-interactive trivia game on top of the same query layer.
+library of named helpers (player-season top-N, career totals,
+career-by-award counts, two-player comparisons, single-season records)
+— and an interactive trivia game on top of the same query layer.
 
 [duckdb]:    https://duckdb.org/
 [pfr]:       https://www.pro-football-reference.com/
@@ -82,10 +82,6 @@ fb_info ask career --award HOF --position WR --n 10
 # Two-player head-to-head:
 fb_info ask compare "Tom Brady" "Peyton Manning"
 fb_info ask compare --p1-id pfr:MariDa00 --p2-id pfr:MahoPa00  # disambiguate
-
-# List award winners by type / season:
-fb_info ask awards --award MVP                  # all MVP winners
-fb_info ask awards --award PB --season 2023     # 2023 Pro Bowlers
 
 # Trivia — three modes plus replay/history:
 fb_info trivia play --rank-by rush_yds --n 5 \
@@ -242,6 +238,40 @@ whose answer set has fewer than N rows or includes any rank-value of 0
 shouldn't be a 0-rush-yds player on a rushing leaderboard). Up to 25
 attempts before falling back to a minimum-filter template.
 
+**What the random generator can roll.** Every supported filter
+dimension is reachable from a fully-random call (no pins). Hit rates
+across a 5,000-sample sweep at the current probabilities:
+
+| dimension                         | hits  | how it's picked                              |
+|-----------------------------------|-------|----------------------------------------------|
+| `team` / `division` / `conference`| ~13% each | season mode only, mutually exclusive   |
+| `has_award`                       | 12%   | season mode only                             |
+| `ever_won_award`                  | 31%   | both modes (career mode rolls it more often) |
+| `rookie_only`                     | 15%   | season mode only                             |
+| `draft_rounds`                    | 19%   | both modes; bucket of (1) / (2,3) / (4-7) / undrafted |
+| `min_stats`                       | 23%   | season mode only; per-season threshold       |
+| `max_stats`                       |  5%   | season mode only; e.g. high-volume / low-yardage |
+| `min_career_stats`                | 18%   | both modes; career SUM floor                 |
+| `max_career_stats`                |  2%   | both modes; career SUM ceiling               |
+| `last_name_contains` (initial)    | 15%   | both modes                                   |
+| `first_name_contains` (initial)   |  9%   | both modes                                   |
+| `college`                         |  8%   | both modes; curated 29-school list           |
+| `drafted_by`                      |  6%   | both modes                                   |
+| `draft_start` / `draft_end`       |  9% (paired) | both modes; random window 1970-2024  |
+| `min_seasons`                     |  7%   | career mode only                             |
+
+Plus the always-rolled dimensions: `rank_by` (weighted toward
+offense / fantasy), `position` (stat-compatible pool), `n` (5 / 10 /
+15), `unique` (~67% true), and `mode` (~25% career, ~75% season).
+Career-mode templates skip filters that don't apply (team / division
+/ conference / has_award / rookie_only / per-season min/max_stats);
+season-mode templates skip career-mode-only filters (min_seasons).
+
+Probabilities are kept low for the narrower filters so games don't
+pile up four restrictive pins at once and slip into the empty-set
+retry loop. The quality gate above re-rolls any combination that
+ends up with too few or zero-value answers.
+
 ### Replay and history
 
 Every trivia game (play / daily / random) writes its resolved template
@@ -276,16 +306,24 @@ fb_info web                 # http://127.0.0.1:8000 (default)
 fb_info web --port 9000 --db /path/to/ff.duckdb
 ```
 
-Three pages:
+Pages:
 
-- `/ask` — pos-top / career / awards form. Pick `kind`, fill any
-  filters, hit run. Result table renders inline.
+- `/ask` — radio toggle picks **pos-top** or **career**; relevant
+  fieldset shows via tiny inline JS. Career has a sub-toggle for
+  rank-by-stat-sum vs award-count mode. Every CLI option is exposed
+  (start/end, team / division / conference, has-award, ever-won,
+  rookie-only, college, draft-rounds, drafted-by, draft-start /
+  draft-end, min/max-stat, min/max-career-stat, name contains,
+  unique, tiebreak-by, show-awards, show-context, min-seasons).
+  Result table renders inline; awards mode caps at the form's `n`.
 - `/trivia/daily` — auto-starts today's deterministic game and drops
   you into the guess loop.
-- `/trivia/random` — form to pin any subset of filters; the rest stays
-  random. Auto-starts on submit.
-- `/trivia/play` — make-your-own form with explicit filters
-  (rank-by, position, year range, team, awards, rookie-only, unique).
+- `/trivia/random` — form to pin any subset of filters (same set as
+  `trivia random` CLI: rank-by / position / years / team / has-award
+  / ever-won / college / draft-rounds / drafted-by / draft-start-end
+  / min-max-stat / min-max-career-stat / mode); the rest stays random.
+  Auto-starts on submit.
+- `/trivia/play` — make-your-own form with the full play flag set.
 
 Game state lives in an in-memory dict on the server, keyed by an
 opaque token. Restarting the server resets in-flight games (they're
@@ -445,7 +483,7 @@ don't redistribute scraped HTML.
 ## Development
 
 ```bash
-.venv/bin/pytest -q              # ~430 tests, all network-free
+.venv/bin/pytest -q              # ~455 tests, all network-free
 .venv/bin/pytest tests/test_pipeline.py -q     # end-to-end pipeline
 .venv/bin/pytest tests/test_cli_trivia.py tests/test_cli_new_commands.py -q
 ```
@@ -475,7 +513,7 @@ ffpts/
 │                                applies college overrides last
 ├── supplemental_drafts.py     hand-encoded supp + pre-merger draft picks +
 │                                KNOWN_COLLEGE_OVERRIDES + KNOWN_HOFERS
-├── queries.py                 named helpers (pos_topN, career_topN, awards_list,
+├── queries.py                 named helpers (pos_topN, career_topN,
 │                                award_topN) + filter builder; player-season default
 ├── trivia_replay.py           save/load trivia game specs for replay + history
 ├── web.py                     optional FastAPI frontend (`fb_info web`)
