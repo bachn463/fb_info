@@ -94,6 +94,7 @@ def _make_app(db_path: Path) -> FastAPI:
         max_stat: str = Form(""),
         min_career_stat: str = Form(""),
         max_career_stat: str = Form(""),
+        draft_rounds: str = Form(""),
     ) -> str:
         try:
             cols, rows, label = _run_ask(
@@ -116,6 +117,7 @@ def _make_app(db_path: Path) -> FastAPI:
                 max_stats=_parse_stat_pair_form(max_stat) or None,
                 min_career_stats=_parse_stat_pair_form(min_career_stat) or None,
                 max_career_stats=_parse_stat_pair_form(max_career_stat) or None,
+                draft_rounds=_parse_draft_rounds_form(draft_rounds),
             )
         except (ValueError, RuntimeError) as e:
             return _page("Error", f"<p><b>Query failed:</b> {html.escape(str(e))}</p>"
@@ -152,6 +154,7 @@ def _make_app(db_path: Path) -> FastAPI:
         min_career_stat: str = Form(""),
         max_career_stat: str = Form(""),
         college: str = Form(""),
+        draft_rounds: str = Form(""),
     ):
         template = {
             "rank_by":  rank_by,
@@ -177,6 +180,8 @@ def _make_app(db_path: Path) -> FastAPI:
         if mcs:                 template["min_career_stats"]   = mcs
         xcs = _parse_stat_pair_form(max_career_stat)
         if xcs:                 template["max_career_stats"]   = xcs
+        rounds_list = _parse_draft_rounds_form(draft_rounds)
+        if rounds_list:         template["draft_rounds"]       = rounds_list
         return _start_game(db_path, template, label="play")
 
     @app.get("/trivia/random", response_class=HTMLResponse)
@@ -199,6 +204,7 @@ def _make_app(db_path: Path) -> FastAPI:
         max_stat: str = Form(""),
         min_career_stat: str = Form(""),
         max_career_stat: str = Form(""),
+        draft_rounds: str = Form(""),
     ):
         import random
 
@@ -225,6 +231,8 @@ def _make_app(db_path: Path) -> FastAPI:
         if mcs:        overrides["min_career_stats"]  = mcs
         xcs = _parse_stat_pair_form(max_career_stat)
         if xcs:        overrides["max_career_stats"]  = xcs
+        rounds_list = _parse_draft_rounds_form(draft_rounds)
+        if rounds_list: overrides["draft_rounds"]     = rounds_list
 
         rng = random.Random(int(seed) if seed else None)
         con = _open_db(db_path)
@@ -304,6 +312,28 @@ def _int_or_none(s: str) -> int | None:
     return int(s) if s else None
 
 
+def _parse_draft_rounds_form(s: str) -> list[int | str] | None:
+    """Parse a comma-separated draft-rounds form input into the
+    ``list[int | str]`` shape pos_topN/career_topN expect. Each token
+    is either an int round number or the literal "undrafted". Empty
+    input → None (no filter). Bad tokens are skipped silently."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    out: list[int | str] = []
+    for tok in (t.strip() for t in s.split(",")):
+        if not tok:
+            continue
+        if tok.lower() == "undrafted":
+            out.append("undrafted")
+        else:
+            try:
+                out.append(int(tok))
+            except ValueError:
+                continue
+    return out or None
+
+
 def _parse_stat_pair_form(s: str) -> dict[str, float]:
     """Parse a single ``col=value`` string from a form input into
     ``{col: float(value)}``. Empty / malformed inputs return ``{}``
@@ -338,6 +368,7 @@ def _run_ask(
     max_stats: dict[str, float] | None = None,
     min_career_stats: dict[str, float] | None = None,
     max_career_stats: dict[str, float] | None = None,
+    draft_rounds: list[int | str] | None = None,
 ) -> tuple[list[str], list[tuple], str]:
     """Run the named ask helper and return (columns, rows, page_label).
 
@@ -364,6 +395,7 @@ def _run_ask(
                 min_stats=min_stats, max_stats=max_stats,
                 min_career_stats=min_career_stats,
                 max_career_stats=max_career_stats,
+                draft_rounds=draft_rounds,
             )
             label = (
                 f"pos-top: top {n} {position} by {rank_by}"
@@ -386,6 +418,7 @@ def _run_ask(
                     last_name_contains=last_name_contains,
                     min_career_stats=min_career_stats,
                     max_career_stats=max_career_stats,
+                    draft_rounds=draft_rounds,
                 )
                 label = f"career: top {n} {position} by SUM({rank_by})"
         elif kind == "awards":
@@ -601,6 +634,8 @@ def _ask_form_body() -> str:
   <p>college: <input name="college" placeholder="Alabama" size="14">
      first-name has: <input name="first_name_contains" size="8">
      last-name has:  <input name="last_name_contains" size="8"></p>
+  <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22">
+     <small>(comma-separated round numbers and/or "undrafted")</small></p>
   <p>min-stat: <input name="min_stat" placeholder="games=10" size="14">
      max-stat: <input name="max_stat" placeholder="rush_yds=999" size="14">
      <small>(pos-top: per-season; col=value)</small></p>
@@ -649,6 +684,7 @@ def _trivia_play_form_body() -> str:
      <small>(HOF is in the list — covers Hall of Fame inductees.)</small></p>
   <p>college: <input name="college" placeholder="Alabama" size="14">
      <small>(substring match against players.college)</small></p>
+  <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22"></p>
   <p>min-stat: <input name="min_stat" placeholder="games=10" size="14">
      max-stat: <input name="max_stat" placeholder="rush_yds=999" size="14">
      <small>(per-season; col=value)</small></p>
@@ -685,6 +721,7 @@ a hard pin, the rest stays random.</p>
      ever-won (any season): <select name="ever_won">{award_opts}</select></p>
   <p>college: <input name="college" placeholder="Alabama" size="14">
      <small>(HOF is in the award lists; --ever-won HOF restricts to inductees.)</small></p>
+  <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22"></p>
   <p>mode:
     <select name="mode">
       <option value="">(random — ~25% career)</option>

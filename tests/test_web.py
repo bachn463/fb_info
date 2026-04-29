@@ -332,6 +332,63 @@ def test_trivia_random_with_ever_won_hof_pin(client):
     assert r.status_code in (200, 303), r.text
 
 
+def test_all_three_forms_expose_draft_rounds(client):
+    """draft_rounds input should appear on /ask, /trivia/play, and
+    /trivia/random with the same name attribute."""
+    for path in ("/ask", "/trivia/play", "/trivia/random"):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert 'name="draft_rounds"' in r.text, f"missing on {path}"
+
+
+def test_ask_pos_top_with_draft_rounds_filter(client):
+    r = client.post(
+        "/ask",
+        data={
+            "kind":         "pos-top",
+            "rank_by":      "rush_yds",
+            "n":            "20",
+            "position":     "RB",
+            "start":        "1985",
+            "end":          "1985",
+            "draft_rounds": "1,2",
+        },
+    )
+    assert r.status_code == 200
+
+
+def test_trivia_play_with_undrafted_rounds_filter(client):
+    """Pass `--draft-rounds undrafted` via the form. Game starts (or
+    surfaces "no matching" if the fixture is too sparse) without
+    erroring on the new field."""
+    r = client.post(
+        "/trivia/play",
+        data={
+            "rank_by":      "rush_yds",
+            "n":            "5",
+            "position":     "RB",
+            "start":        "1985",
+            "end":          "1985",
+            "unique":       "on",
+            "draft_rounds": "undrafted",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+
+def test_trivia_random_with_draft_rounds_filter(client):
+    r = client.post(
+        "/trivia/random",
+        data={
+            "seed":         "1",
+            "draft_rounds": "1",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+
 def test_trivia_random_with_career_threshold(client):
     """Pass a career threshold + pinned career mode + rank-by; the
     handler should accept the form fields without error."""
