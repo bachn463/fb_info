@@ -399,6 +399,46 @@ def test_ask_pos_top_show_awards_appends_column(client):
     assert "<th>awards</th>" in r.text or ">awards<" in r.text
 
 
+def test_trivia_forms_expose_draft_filters(client):
+    """drafted-by / draft-start / draft-end should appear on both
+    trivia forms (parity with the CLI flags)."""
+    for path in ("/trivia/play", "/trivia/random"):
+        r = client.get(path)
+        assert r.status_code == 200
+        for name in ("drafted_by", "draft_start", "draft_end"):
+            assert f'name="{name}"' in r.text, f"missing on {path}: {name}"
+
+
+def test_trivia_play_with_drafted_by(client):
+    """Submit `--drafted-by PIT` on the play form. Game starts (or
+    surfaces 'no matching' on a sparse fixture) without erroring."""
+    r = client.post(
+        "/trivia/play",
+        data={
+            "rank_by":     "rush_yds",
+            "n":           "5",
+            "position":    "RB",
+            "drafted_by":  "PIT",
+            "unique":      "on",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+
+def test_trivia_random_with_draft_year_range(client):
+    r = client.post(
+        "/trivia/random",
+        data={
+            "seed":         "1",
+            "draft_start":  "1990",
+            "draft_end":    "2000",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+
 def test_all_three_forms_expose_draft_rounds(client):
     """draft_rounds input should appear on /ask, /trivia/play, and
     /trivia/random with the same name attribute."""

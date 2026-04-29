@@ -189,6 +189,9 @@ def _make_app(db_path: Path) -> FastAPI:
         max_career_stat: str = Form(""),
         college: str = Form(""),
         draft_rounds: str = Form(""),
+        drafted_by: str = Form(""),
+        draft_start: str = Form(""),
+        draft_end: str = Form(""),
     ):
         template = {
             "rank_by":  rank_by,
@@ -204,6 +207,9 @@ def _make_app(db_path: Path) -> FastAPI:
         if ever_won:            template["ever_won_award"]     = [ever_won]
         if rookie_only:         template["rookie_only"]        = True
         if college:             template["college"]            = college
+        if drafted_by:          template["drafted_by"]         = drafted_by
+        if draft_start:         template["draft_start"]        = int(draft_start)
+        if draft_end:           template["draft_end"]          = int(draft_end)
         # Stat thresholds — col=value pairs from form. Skip empty /
         # malformed; downstream pos_topN validates the col name.
         ms = _parse_stat_pair_form(min_stat)
@@ -239,6 +245,9 @@ def _make_app(db_path: Path) -> FastAPI:
         min_career_stat: str = Form(""),
         max_career_stat: str = Form(""),
         draft_rounds: str = Form(""),
+        drafted_by: str = Form(""),
+        draft_start: str = Form(""),
+        draft_end: str = Form(""),
     ):
         import random
 
@@ -267,6 +276,9 @@ def _make_app(db_path: Path) -> FastAPI:
         if xcs:        overrides["max_career_stats"]  = xcs
         rounds_list = _parse_draft_rounds_form(draft_rounds)
         if rounds_list: overrides["draft_rounds"]     = rounds_list
+        if drafted_by:  overrides["drafted_by"]       = drafted_by
+        if draft_start: overrides["draft_start"]      = int(draft_start)
+        if draft_end:   overrides["draft_end"]        = int(draft_end)
 
         rng = random.Random(int(seed) if seed else None)
         con = _open_db(db_path)
@@ -797,7 +809,11 @@ def _trivia_play_form_body() -> str:
      <small>(HOF is in the list — covers Hall of Fame inductees.)</small></p>
   <p>college: <input name="college" placeholder="Alabama" size="14">
      <small>(substring match against players.college)</small></p>
-  <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22"></p>
+  <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22">
+     drafted-by: <input name="drafted_by" placeholder="PIT" size="6"></p>
+  <p>draft-start: <input type="number" name="draft_start" size="6">
+     draft-end:   <input type="number" name="draft_end" size="6">
+     <small>(year the player was drafted, not the season they played)</small></p>
   <p>min-stat: <input name="min_stat" placeholder="games=10" size="14">
      max-stat: <input name="max_stat" placeholder="rush_yds=999" size="14">
      <small>(per-season; col=value)</small></p>
@@ -834,7 +850,10 @@ a hard pin, the rest stays random.</p>
      ever-won (any season): <select name="ever_won">{award_opts}</select></p>
   <p>college: <input name="college" placeholder="Alabama" size="14">
      <small>(HOF is in the award lists; --ever-won HOF restricts to inductees.)</small></p>
-  <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22"></p>
+  <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22">
+     drafted-by: <input name="drafted_by" placeholder="PIT" size="6"></p>
+  <p>draft-start: <input type="number" name="draft_start" size="6">
+     draft-end:   <input type="number" name="draft_end" size="6"></p>
   <p>mode:
     <select name="mode">
       <option value="">(random — ~25% career)</option>
