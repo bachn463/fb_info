@@ -261,13 +261,14 @@ across a 10,000-sample sweep at current probabilities:
 | `min_seasons`                     |  7%   | career mode only                             |
 
 Plus the always-rolled dimensions: `rank_by` (weighted toward
-offense / fantasy), `position` (stat-compatible pool — defensive
-stats prefer DL / LB / DB / SAFETY alias groups, offensive stats
-prefer their natural position), `n` (5 / 10 / 15), `unique` (~67%
-true), and `mode` (~25% career, ~75% season). Career-mode
-templates skip filters that don't apply (team / division /
-conference / has_award / rookie_only / per-season min/max_stats);
-season-mode templates skip career-mode-only filters (min_seasons).
+offense / fantasy), `position` (defaults to `ALL` — broad
+cross-position games unless the user pins a specific position or
+alias group like `FLEX` / `SAFETY` / `DB` / `LB` / `DL`), `n` (5 /
+10 / 15), `unique` (~67% true), and `mode` (~25% career, ~75%
+season). Career-mode templates skip filters that don't apply (team
+/ division / conference / has_award / rookie_only / per-season
+min/max_stats); season-mode templates skip career-mode-only
+filters (min_seasons).
 
 **Pin-count distribution.** Active-filter counts (excluding the
 always-set core) cluster around 3-4. Across 10,000 samples:

@@ -396,55 +396,59 @@ def test_trivia_random_seed_42_title_consistency(tmp_path):
     assert title1 is not None and title1 == title2
 
 
-def test_trivia_random_position_matches_stat(tmp_path):
-    """The random generator must pair the rank-by stat with a
-    sensible position. Sweep many seeds, parse out the (rank_by,
-    position) pair from the title, and check that each pair is in
-    the compatibility map."""
-    from ffpts.cli import _STAT_COMPATIBLE_POSITIONS
-
+def test_trivia_random_defaults_position_to_all(tmp_path):
+    """When the user doesn't pin a position, random trivia defaults
+    to position=ALL (no position filter). This produces broad
+    cross-position games rather than restricting to the rank-by's
+    natural position."""
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
-    seen_pairs: set[tuple[str, str]] = set()
-    for seed in range(40):
+    for seed in range(20):
         r = runner.invoke(
             app, ["trivia", "random", "--seed", str(seed), "--db", str(db)],
             input="quit\n",
         )
-        # Title looks like:
-        #   "Top 10 RB player-seasons by rush_yds (...)"          (season mode)
-        #   "Top 10 player-seasons by fpts_ppr ..."                (season, ALL)
-        #   "Top 10 RB career-totals by rush_yds (...)"            (career mode)
         title = next(
             (l for l in r.output.splitlines() if l.startswith("Top ")),
             None,
         )
         if title is None:
             continue
-        # Parse: "Top {n} [{POS} ]<unit> by {rank_by}..." where unit is
-        # one of "player-seasons" | "career-totals".
+        # The "Top N <unit> by ..." form (no position word in head)
+        # is what ALL produces. A position pin would render as
+        # "Top N <POS> player-seasons by ..." with POS between N and
+        # the unit phrase.
         for unit in (" player-seasons by ", " career-totals by "):
             if unit in title:
-                head, _, tail = title.partition(unit)
+                head, _, _ = title.partition(unit)
                 break
         else:
-            continue  # Unrecognized title — skip.
-        rank_by = tail.split(" ", 1)[0].rstrip(",")
-        head_parts = head.split()
-        # head_parts: ["Top", "10"] or ["Top", "10", "RB"]
-        position = head_parts[2] if len(head_parts) >= 3 else "ALL"
-        if rank_by not in _STAT_COMPATIBLE_POSITIONS:
-            # Unknown stat — generator shouldn't pick it.
             continue
-        compat = set(_STAT_COMPATIBLE_POSITIONS[rank_by])
-        assert position in compat, (
-            f"seed {seed}: position {position} not in compatible "
-            f"set {compat} for stat {rank_by}"
+        head_parts = head.split()
+        # head_parts: ["Top", "10"] for ALL position; ["Top", "10", "POS"]
+        # for a pinned position. With no override, every game should
+        # render as just "Top N <unit>".
+        assert len(head_parts) == 2, (
+            f"seed {seed}: expected position=ALL (no position word), got {title!r}"
         )
-        seen_pairs.add((rank_by, position))
-    # Sanity: we should have seen multiple distinct (stat, position)
-    # combinations across 40 seeds.
-    assert len(seen_pairs) >= 5
+
+
+def test_trivia_random_with_pinned_position_keeps_pin(tmp_path):
+    """Pinned --position must override the default-ALL behavior."""
+    db = tmp_path / "ff.duckdb"
+    _populated_db(db)
+    r = runner.invoke(
+        app,
+        ["trivia", "random", "--seed", "1", "--position", "QB",
+         "--db", str(db)],
+        input="quit\n",
+    )
+    assert r.exit_code == 0, r.output
+    title = next(
+        (l for l in r.output.splitlines() if l.startswith("Top ")), None,
+    )
+    assert title is not None
+    assert "QB" in title.split(" by ")[0]
 
 
 # ---------- ask career --award (consolidated awards-top), college, career stat min/max ----------

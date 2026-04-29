@@ -1673,12 +1673,16 @@ def _random_trivia_template(
     else:
         mode = "career" if rng.random() < 0.25 else "season"
 
-    # Position — pinned, or random from the stat-specific pool.
+    # Position — defaults to ALL when not pinned, so the random gen
+    # produces broad cross-position games rather than always
+    # restricting to the rank-by's natural fit. Users who want a
+    # specific position (or one of the alias groups: FLEX / SAFETY /
+    # DB / LB / DL) pin it explicitly. The _STAT_COMPATIBLE_POSITIONS
+    # map is still used elsewhere as a soundness check.
     if overrides.get("position"):
         position = overrides["position"]
     else:
-        pos_pool = _STAT_COMPATIBLE_POSITIONS.get(rank_by, ["ALL"])
-        position = rng.choice(pos_pool)
+        position = "ALL"
 
     spec: dict = {
         "rank_by":  rank_by,
