@@ -93,6 +93,24 @@ def test_ask_career_award_query_returns_results(client):
     assert "award_count" in r.text or "AP_FIRST" in r.text
 
 
+def test_ask_awards_respects_n_limit(client):
+    """The awards form has an `n` field — it should cap the number
+    of awards rows returned, otherwise an unfiltered query on a real
+    DB returns thousands of rows and the page becomes unusable."""
+    r = client.post(
+        "/ask",
+        data={
+            "kind":     "awards",
+            "rank_by":  "fpts_ppr",
+            "n":        "5",
+            "position": "ALL",
+        },
+    )
+    assert r.status_code == 200
+    # 5 data rows + 1 header row.
+    assert r.text.count("<tr>") <= 6
+
+
 def test_ask_awards_query_lists_winners(client):
     r = client.post(
         "/ask",

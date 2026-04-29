@@ -722,6 +722,7 @@ def awards_list(
     award_type: str | None = None,
     season: int | None = None,
     winners_only: bool = True,
+    limit: int | None = None,
 ) -> tuple[str, list]:
     """List rows from ``v_award_winners`` filtered by award type and/or
     season.
@@ -729,7 +730,11 @@ def awards_list(
     ``winners_only=True`` (default) restricts to outright winners —
     rows with ``vote_finish = 1`` for vote-ranked awards (MVP, OPOY,
     DPOY, OROY, DROY, CPOY) plus all rows for binary awards (PB,
-    AP_FIRST, AP_SECOND, WPMOY) which carry NULL ``vote_finish``.
+    AP_FIRST, AP_SECOND, WPMOY, HOF) which carry NULL ``vote_finish``.
+
+    ``limit`` caps the result. None = unlimited (legacy default).
+    Callers facing a browser / large display should pass a sensible
+    cap — an unfiltered build can return 7000+ rows.
     """
     if award_type is not None and award_type not in AWARD_TYPES_ALLOWED:
         raise ValueError(
@@ -747,6 +752,9 @@ def awards_list(
     if winners_only:
         where.append("(vw.vote_finish = 1 OR vw.vote_finish IS NULL)")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    limit_sql = "LIMIT ?" if limit is not None else ""
+    if limit is not None:
+        params.append(limit)
     # Position and team for each award row are derived per (player_id,
     # season) from player_season_stats. Players with no stats row
     # for that season (linemen, specialists who don't appear on the
@@ -769,6 +777,7 @@ def awards_list(
         {where_sql}
         ORDER BY vw.season DESC, vw.award_type ASC,
                  COALESCE(vw.vote_finish, 1) ASC, vw.name ASC
+        {limit_sql}
     """
     return sql, params
 

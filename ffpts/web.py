@@ -119,9 +119,17 @@ def _make_app(db_path: Path) -> FastAPI:
                 max_career_stats=_parse_stat_pair_form(max_career_stat) or None,
                 draft_rounds=_parse_draft_rounds_form(draft_rounds),
             )
-        except (ValueError, RuntimeError) as e:
-            return _page("Error", f"<p><b>Query failed:</b> {html.escape(str(e))}</p>"
-                                  '<p><a href="/ask">Back</a></p>')
+        except Exception as e:
+            # Catch broadly — a malformed filter (e.g. a min-stat value
+            # that isn't a real column) shouldn't 500 the page. Any
+            # genuine bug shows up in the message verbatim so the user
+            # can paste it back.
+            return _page(
+                "Error",
+                f"<p><b>Query failed:</b> {html.escape(type(e).__name__)}: "
+                f"{html.escape(str(e))}</p>"
+                '<p><a href="/ask">Back</a></p>',
+            )
         body = (
             f"<h2>{html.escape(label)}</h2>\n"
             + _render_table(cols, rows)
@@ -424,11 +432,13 @@ def _run_ask(
         elif kind == "awards":
             sql, params = awards_list(
                 award_type=award or None, season=season, winners_only=True,
+                limit=n,
             )
             label = (
                 "awards: "
                 + (f"{award} winners" if award else "all winners")
                 + (f" in {season}" if season else "")
+                + f" (top {n})"
             )
         else:
             raise ValueError(f"unknown kind {kind!r}")

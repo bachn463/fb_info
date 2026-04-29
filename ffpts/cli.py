@@ -1222,12 +1222,19 @@ def ask_awards(
              "--include-finalists to see runner-ups for vote-ranked "
              "awards (MVP, OPOY, DPOY, OROY, DROY, CPOY).",
     ),
+    n: int | None = typer.Option(
+        None, "--n",
+        help="Cap result rows. Default unlimited; useful when the "
+             "filter set returns thousands (e.g. all PB winners across "
+             "1970-2025).",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
 ) -> None:
     """List award winners. Defaults to all awards across all seasons
     (winners only); pass --award and/or --season to scope down."""
     sql, params = awards_list(
         award_type=award, season=season, winners_only=winners_only,
+        limit=n,
     )
     con = _open_db(db)
     try:
