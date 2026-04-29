@@ -521,6 +521,18 @@ def trivia_play(
     tiebreak_by: list[str] | None = typer.Option(None, "--tiebreak-by"),
     min_stat: list[str] | None = typer.Option(None, "--min-stat"),
     max_stat: list[str] | None = typer.Option(None, "--max-stat"),
+    college: str | None = typer.Option(
+        None, "--college",
+        help="College name (substring match). Drafted players only.",
+    ),
+    min_career_stat: list[str] | None = typer.Option(
+        None, "--min-career-stat",
+        help="Career-total floor of the form col=value. Repeatable.",
+    ),
+    max_career_stat: list[str] | None = typer.Option(
+        None, "--max-career-stat",
+        help="Career-total ceiling of the form col=value. Repeatable.",
+    ),
     unique: bool = typer.Option(
         True, "--unique/--no-unique",
         help="Default ON for trivia: each player counts once. Use "
@@ -559,6 +571,8 @@ def trivia_play(
 
     min_stats_dict = _parse_stat_pairs(min_stat, "--min-stat")
     max_stats_dict = _parse_stat_pairs(max_stat, "--max-stat")
+    min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
+    max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
 
     sql, params = pos_topN(
         position, n=n, rank_by=rank_by,
@@ -575,6 +589,9 @@ def trivia_play(
         tiebreak_by=tiebreak_by if tiebreak_by else None,
         min_stats=min_stats_dict if min_stats_dict else None,
         max_stats=max_stats_dict if max_stats_dict else None,
+        college=college,
+        min_career_stats=min_career_dict if min_career_dict else None,
+        max_career_stats=max_career_dict if max_career_dict else None,
     )
     con = _open_db(db)
     try:
@@ -600,6 +617,9 @@ def trivia_play(
         drafted_by=drafted_by, draft_rounds=rounds_list,
         min_stats=min_stats_dict, max_stats=max_stats_dict,
         unique=unique,
+        college=college,
+        min_career_stats=min_career_dict if min_career_dict else None,
+        max_career_stats=max_career_dict if max_career_dict else None,
     )
 
     # Save a template-shaped spec so this game can be replayed later.
@@ -629,6 +649,9 @@ def trivia_play(
     if draft_end is not None:           play_spec["draft_end"]           = draft_end
     if drafted_by:                      play_spec["drafted_by"]          = drafted_by
     if tiebreak_by:                     play_spec["tiebreak_by"]         = tiebreak_by
+    if college:                         play_spec["college"]             = college
+    if min_career_dict:                 play_spec["min_career_stats"]    = min_career_dict
+    if max_career_dict:                 play_spec["max_career_stats"]    = max_career_dict
     if min_stats_dict:                  play_spec["min_stats"]           = min_stats_dict
     if max_stats_dict:                  play_spec["max_stats"]           = max_stats_dict
     game_id = save_spec(

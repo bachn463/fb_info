@@ -184,3 +184,166 @@ def test_trivia_daily_runs(client):
 def test_trivia_unknown_game_id_404(client):
     r = client.get("/trivia/this-id-does-not-exist")
     assert r.status_code == 404
+
+
+# ---- Stat threshold filters in web forms ----
+
+def test_ask_form_exposes_stat_threshold_inputs(client):
+    """The /ask form should include all four threshold input names so
+    users can enter col=value pairs from the browser."""
+    r = client.get("/ask")
+    assert r.status_code == 200
+    for name in ("min_stat", "max_stat", "min_career_stat", "max_career_stat"):
+        assert f'name="{name}"' in r.text
+
+
+def test_trivia_play_form_exposes_stat_threshold_inputs(client):
+    r = client.get("/trivia/play")
+    assert r.status_code == 200
+    for name in ("min_stat", "max_stat", "min_career_stat", "max_career_stat"):
+        assert f'name="{name}"' in r.text
+
+
+def test_trivia_random_form_exposes_stat_threshold_inputs(client):
+    r = client.get("/trivia/random")
+    assert r.status_code == 200
+    for name in ("min_stat", "max_stat", "min_career_stat", "max_career_stat"):
+        assert f'name="{name}"' in r.text
+
+
+def test_ask_pos_top_with_min_stat_filter(client):
+    """Submit a min-stat threshold from the /ask form and verify the
+    handler threads it through to pos_topN. games=10 should restrict
+    1985 RBs to those with 10+ games (excludes Bo Jackson — only 7
+    games in 1985)."""
+    r = client.post(
+        "/ask",
+        data={
+            "kind":     "pos-top",
+            "rank_by":  "rush_yds",
+            "n":        "20",
+            "position": "RB",
+            "start":    "1985",
+            "end":      "1985",
+            "min_stat": "games=10",
+        },
+    )
+    assert r.status_code == 200
+    # Walter Payton played 16 games in 1985 — must be in the table.
+    assert "Walter Payton" in r.text
+
+
+def test_ask_pos_top_with_max_career_stat_filter(client):
+    """Career threshold composes with pos-top per-season ranking.
+    Just verify the page renders without error — the fixture is too
+    sparse to make a strong assertion about who ends up in/out."""
+    r = client.post(
+        "/ask",
+        data={
+            "kind":             "pos-top",
+            "rank_by":          "rush_yds",
+            "n":                "10",
+            "position":         "RB",
+            "max_career_stat":  "rush_yds=99999",
+        },
+    )
+    assert r.status_code == 200
+
+
+def test_trivia_play_with_max_stat_threshold(client):
+    """Start a play game with a max-stat ceiling. Game state machine
+    accepts the threshold and the page renders the title with it
+    surfaced."""
+    r = client.post(
+        "/trivia/play",
+        data={
+            "rank_by":  "rush_yds",
+            "n":        "3",
+            "position": "RB",
+            "start":    "1985",
+            "end":      "1985",
+            "unique":   "on",
+            "max_stat": "rush_yds=1700",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303, r.text
+    gid = r.headers["location"].rsplit("/", 1)[-1]
+    page = client.get(f"/trivia/{gid}")
+    assert page.status_code == 200
+    assert "rush_yds &lt;= 1700" in page.text or "rush_yds <= 1700" in page.text
+
+
+def test_trivia_play_form_has_college_and_award_pins(client):
+    """College + has-award + ever-won should all appear on the
+    make-your-own form."""
+    r = client.get("/trivia/play")
+    assert r.status_code == 200
+    for name in ("college", "has_award", "ever_won"):
+        assert f'name="{name}"' in r.text
+
+
+def test_trivia_random_form_has_college_and_award_pins(client):
+    """Random's form previously had has_award only; now ever_won and
+    college are exposed too. HOF should be in the dropdown values."""
+    r = client.get("/trivia/random")
+    assert r.status_code == 200
+    for name in ("college", "has_award", "ever_won"):
+        assert f'name="{name}"' in r.text
+    # HOF is a valid award_type and should be selectable.
+    assert ">HOF<" in r.text
+
+
+def test_trivia_play_with_college_pin(client):
+    """Pin --college on the play form. Game starts without error;
+    title surfaces the college clause."""
+    r = client.post(
+        "/trivia/play",
+        data={
+            "rank_by":  "rec_yds",
+            "n":        "5",
+            "position": "ALL",
+            "college":  "Mississippi",  # Jerry Rice → Mississippi Valley State
+            "unique":   "on",
+        },
+        follow_redirects=False,
+    )
+    # Either 303 to a game (filter matched) or 200 with an empty
+    # message (fixture too sparse). Both acceptable; the handler must
+    # not 500 on the new field.
+    assert r.status_code in (200, 303), r.text
+
+
+def test_trivia_random_with_ever_won_hof_pin(client):
+    """Pin --ever-won HOF on the random form. Mode is forced to
+    season because has_award is a season-only filter — wait, no, the
+    auto-fallback is only for has_award. ever_won composes with both
+    modes. Just verify the handler accepts the field."""
+    r = client.post(
+        "/trivia/random",
+        data={
+            "seed":      "1",
+            "ever_won":  "HOF",
+            "rank_by":   "rec_yds",
+            "position":  "WR",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+
+def test_trivia_random_with_career_threshold(client):
+    """Pass a career threshold + pinned career mode + rank-by; the
+    handler should accept the form fields without error."""
+    r = client.post(
+        "/trivia/random",
+        data={
+            "seed":              "1",
+            "rank_by":           "rush_yds",
+            "position":          "RB",
+            "mode":              "career",
+            "min_career_stat":   "rush_yds=100",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text

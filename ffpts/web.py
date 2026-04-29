@@ -90,6 +90,10 @@ def _make_app(db_path: Path) -> FastAPI:
         award: str = Form(""),
         season: str = Form(""),
         unique: str = Form(""),
+        min_stat: str = Form(""),
+        max_stat: str = Form(""),
+        min_career_stat: str = Form(""),
+        max_career_stat: str = Form(""),
     ) -> str:
         try:
             cols, rows, label = _run_ask(
@@ -108,6 +112,10 @@ def _make_app(db_path: Path) -> FastAPI:
                 award=award or None,
                 season=_int_or_none(season),
                 unique=bool(unique),
+                min_stats=_parse_stat_pair_form(min_stat) or None,
+                max_stats=_parse_stat_pair_form(max_stat) or None,
+                min_career_stats=_parse_stat_pair_form(min_career_stat) or None,
+                max_career_stats=_parse_stat_pair_form(max_career_stat) or None,
             )
         except (ValueError, RuntimeError) as e:
             return _page("Error", f"<p><b>Query failed:</b> {html.escape(str(e))}</p>"
@@ -139,6 +147,11 @@ def _make_app(db_path: Path) -> FastAPI:
         ever_won: str = Form(""),
         rookie_only: str = Form(""),
         unique: str = Form("on"),
+        min_stat: str = Form(""),
+        max_stat: str = Form(""),
+        min_career_stat: str = Form(""),
+        max_career_stat: str = Form(""),
+        college: str = Form(""),
     ):
         template = {
             "rank_by":  rank_by,
@@ -153,6 +166,17 @@ def _make_app(db_path: Path) -> FastAPI:
         if has_award:           template["has_award"]          = [has_award]
         if ever_won:            template["ever_won_award"]     = [ever_won]
         if rookie_only:         template["rookie_only"]        = True
+        if college:             template["college"]            = college
+        # Stat thresholds — col=value pairs from form. Skip empty /
+        # malformed; downstream pos_topN validates the col name.
+        ms = _parse_stat_pair_form(min_stat)
+        if ms:                  template["min_stats"]          = ms
+        xs = _parse_stat_pair_form(max_stat)
+        if xs:                  template["max_stats"]          = xs
+        mcs = _parse_stat_pair_form(min_career_stat)
+        if mcs:                 template["min_career_stats"]   = mcs
+        xcs = _parse_stat_pair_form(max_career_stat)
+        if xcs:                 template["max_career_stats"]   = xcs
         return _start_game(db_path, template, label="play")
 
     @app.get("/trivia/random", response_class=HTMLResponse)
@@ -168,18 +192,39 @@ def _make_app(db_path: Path) -> FastAPI:
         end: str = Form(""),
         team: str = Form(""),
         has_award: str = Form(""),
+        ever_won: str = Form(""),
+        college: str = Form(""),
         mode: str = Form(""),
+        min_stat: str = Form(""),
+        max_stat: str = Form(""),
+        min_career_stat: str = Form(""),
+        max_career_stat: str = Form(""),
     ):
         import random
 
         overrides: dict = {}
-        if rank_by:    overrides["rank_by"]   = rank_by
-        if position:   overrides["position"]  = position
-        if start:      overrides["start"]     = int(start)
-        if end:        overrides["end"]       = int(end)
-        if team:       overrides["team"]      = team
-        if has_award:  overrides["has_award"] = [has_award]
-        if mode:       overrides["mode"]      = mode
+        if rank_by:    overrides["rank_by"]        = rank_by
+        if position:   overrides["position"]       = position
+        if start:      overrides["start"]          = int(start)
+        if end:        overrides["end"]            = int(end)
+        if team:       overrides["team"]           = team
+        if has_award:  overrides["has_award"]      = [has_award]
+        if ever_won:   overrides["ever_won_award"] = [ever_won]
+        if college:    overrides["college"]        = college
+        if mode:       overrides["mode"]           = mode
+        # Stat thresholds — pass both season + career pairs as
+        # overrides. The random gen routes them per mode: season-mode
+        # templates use min_stats / max_stats, career-mode templates
+        # use min_career_stats / max_career_stats. The other pair is
+        # silently dropped to avoid confusing partial-pin behavior.
+        ms = _parse_stat_pair_form(min_stat)
+        if ms:         overrides["min_stats"]         = ms
+        xs = _parse_stat_pair_form(max_stat)
+        if xs:         overrides["max_stats"]         = xs
+        mcs = _parse_stat_pair_form(min_career_stat)
+        if mcs:        overrides["min_career_stats"]  = mcs
+        xcs = _parse_stat_pair_form(max_career_stat)
+        if xcs:        overrides["max_career_stats"]  = xcs
 
         rng = random.Random(int(seed) if seed else None)
         con = _open_db(db_path)
@@ -259,6 +304,25 @@ def _int_or_none(s: str) -> int | None:
     return int(s) if s else None
 
 
+def _parse_stat_pair_form(s: str) -> dict[str, float]:
+    """Parse a single ``col=value`` string from a form input into
+    ``{col: float(value)}``. Empty / malformed inputs return ``{}``
+    so a typo silently drops the filter rather than 500'ing the page.
+    The col name still gets validated downstream by the helpers
+    against RANK_BY_ALLOWED, which surfaces a friendly error."""
+    s = (s or "").strip()
+    if not s or "=" not in s:
+        return {}
+    col, val = s.split("=", 1)
+    col = col.strip()
+    if not col:
+        return {}
+    try:
+        return {col: float(val.strip())}
+    except ValueError:
+        return {}
+
+
 def _run_ask(
     db_path: Path,
     *, kind: str, rank_by: str, n: int, position: str,
@@ -270,13 +334,20 @@ def _run_ask(
     first_name_contains: str | None, last_name_contains: str | None,
     award: str | None, season: int | None,
     unique: bool,
+    min_stats: dict[str, float] | None = None,
+    max_stats: dict[str, float] | None = None,
+    min_career_stats: dict[str, float] | None = None,
+    max_career_stats: dict[str, float] | None = None,
 ) -> tuple[list[str], list[tuple], str]:
     """Run the named ask helper and return (columns, rows, page_label).
 
     ``kind`` selects which helper:
-      pos-top  -> pos_topN
-      career   -> career_topN (or award_topN when --award is set)
-      awards   -> awards_list
+      pos-top  -> pos_topN — accepts min_stats/max_stats (per-season
+                  thresholds) and min_career_stats/max_career_stats
+                  (HAVING-style on career SUMs).
+      career   -> career_topN (or award_topN when --award is set);
+                  career-stat thresholds compose with both modes.
+      awards   -> awards_list — stat thresholds don't apply.
     """
     con = _open_db(db_path)
     try:
@@ -290,6 +361,9 @@ def _run_ask(
                 has_award=has_award, ever_won_award=ever_won,
                 rookie_only=rookie_only, college=college,
                 unique=unique,
+                min_stats=min_stats, max_stats=max_stats,
+                min_career_stats=min_career_stats,
+                max_career_stats=max_career_stats,
             )
             label = (
                 f"pos-top: top {n} {position} by {rank_by}"
@@ -297,7 +371,11 @@ def _run_ask(
             )
         elif kind == "career":
             if award:
-                sql, params = award_topN(award, n=n, position=position, college=college)
+                sql, params = award_topN(
+                    award, n=n, position=position, college=college,
+                    min_career_stats=min_career_stats,
+                    max_career_stats=max_career_stats,
+                )
                 label = f"career: top {n} {position} by {award} count"
             else:
                 sql, params = career_topN(
@@ -306,6 +384,8 @@ def _run_ask(
                     ever_won_award=ever_won, college=college,
                     first_name_contains=first_name_contains,
                     last_name_contains=last_name_contains,
+                    min_career_stats=min_career_stats,
+                    max_career_stats=max_career_stats,
                 )
                 label = f"career: top {n} {position} by SUM({rank_by})"
         elif kind == "awards":
@@ -521,6 +601,12 @@ def _ask_form_body() -> str:
   <p>college: <input name="college" placeholder="Alabama" size="14">
      first-name has: <input name="first_name_contains" size="8">
      last-name has:  <input name="last_name_contains" size="8"></p>
+  <p>min-stat: <input name="min_stat" placeholder="games=10" size="14">
+     max-stat: <input name="max_stat" placeholder="rush_yds=999" size="14">
+     <small>(pos-top: per-season; col=value)</small></p>
+  <p>min-career-stat: <input name="min_career_stat" placeholder="pass_yds=20000" size="16">
+     max-career-stat: <input name="max_career_stat" placeholder="def_int=30" size="16">
+     <small>(pos-top + career: career SUMs)</small></p>
   <p>
     <label><input type="checkbox" name="rookie_only" value="1"> rookie-only</label>
     &nbsp;
@@ -559,7 +645,16 @@ def _trivia_play_form_body() -> str:
      end:   <input type="number" name="end"   size="6"></p>
   <p>team: <input name="team" size="6"></p>
   <p>has-award (this season): <select name="has_award">{award_opts}</select>
-     ever-won (any season):   <select name="ever_won">{award_opts}</select></p>
+     ever-won (any season):   <select name="ever_won">{award_opts}</select>
+     <small>(HOF is in the list — covers Hall of Fame inductees.)</small></p>
+  <p>college: <input name="college" placeholder="Alabama" size="14">
+     <small>(substring match against players.college)</small></p>
+  <p>min-stat: <input name="min_stat" placeholder="games=10" size="14">
+     max-stat: <input name="max_stat" placeholder="rush_yds=999" size="14">
+     <small>(per-season; col=value)</small></p>
+  <p>min-career-stat: <input name="min_career_stat" placeholder="pass_yds=20000" size="16">
+     max-career-stat: <input name="max_career_stat" placeholder="def_int=30" size="16">
+     <small>(career SUM; col=value)</small></p>
   <p>
     <label><input type="checkbox" name="rookie_only" value="1"> rookie-only</label>
     &nbsp;
@@ -586,7 +681,10 @@ a hard pin, the rest stays random.</p>
   <p>start: <input type="number" name="start" size="6">
      end:   <input type="number" name="end"   size="6"></p>
   <p>team: <input name="team" size="6">
-     has-award: <select name="has_award">{award_opts}</select></p>
+     has-award (this season): <select name="has_award">{award_opts}</select>
+     ever-won (any season): <select name="ever_won">{award_opts}</select></p>
+  <p>college: <input name="college" placeholder="Alabama" size="14">
+     <small>(HOF is in the award lists; --ever-won HOF restricts to inductees.)</small></p>
   <p>mode:
     <select name="mode">
       <option value="">(random — ~25% career)</option>
@@ -594,6 +692,12 @@ a hard pin, the rest stays random.</p>
       <option value="career">career</option>
     </select>
   </p>
+  <p>min-stat: <input name="min_stat" placeholder="games=10" size="14">
+     max-stat: <input name="max_stat" placeholder="rush_yds=999" size="14">
+     <small>(used when mode=season)</small></p>
+  <p>min-career-stat: <input name="min_career_stat" placeholder="pass_yds=20000" size="16">
+     max-career-stat: <input name="max_career_stat" placeholder="def_int=30" size="16">
+     <small>(used when mode=career)</small></p>
   <p><input type="submit" value="start random"></p>
 </form>
 """
