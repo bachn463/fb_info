@@ -1484,13 +1484,15 @@ _STAT_COMPATIBLE_POSITIONS: dict[str, list[str]] = {
     "fpts_ppr":              ["FLEX"] * 2 + ["ALL"] * 2 + ["QB", "RB", "WR", "TE"],
     "fpts_half":             ["FLEX"] * 2 + ["ALL"] * 2 + ["QB", "RB", "WR", "TE"],
     "fpts_std":              ["FLEX"] * 2 + ["ALL"] * 2 + ["QB", "RB", "WR", "TE"],
-    # Defense — position is fine-grained (LB/DB/DE/...) and we don't
-    # bother distinguishing in the DB, so ALL is the only sensible pick.
-    "def_sacks":             ["ALL"],
-    "def_int":               ["ALL"],
-    "def_int_td":            ["ALL"],
-    "def_pass_def":          ["ALL"],
-    "def_tackles_combined":  ["ALL"],
+    # Defense — alias groups (DL / LB / DB / SAFETY) cover the
+    # natural specialties for each stat: sacks come from DL + LB
+    # primarily, INTs from DBs + LBs, tackles from everyone with LB
+    # heaviest. ALL stays as the broadest pick.
+    "def_sacks":             ["ALL"] * 4 + ["DL"] * 3 + ["LB"] * 2,
+    "def_int":               ["ALL"] * 3 + ["DB"] * 3 + ["SAFETY"] * 2 + ["LB"],
+    "def_int_td":            ["ALL"] * 3 + ["DB"] * 2 + ["SAFETY"] + ["LB"],
+    "def_pass_def":          ["ALL"] * 3 + ["DB"] * 3 + ["SAFETY"] * 2 + ["LB"],
+    "def_tackles_combined":  ["ALL"] * 3 + ["LB"] * 2 + ["DL", "DB", "SAFETY"],
     # Kicking — K (and P for punts, if/when added).
     "fg_made":               ["K"],
     "fg_long":               ["K"],
@@ -1695,6 +1697,13 @@ def _random_trivia_template(
     # special-teams keep modest probabilities so we don't pile filters
     # onto an already-narrow pool.
     is_off  = rank_by in _OFFENSE_AND_FANTASY_RANK_BY
+    # Pin-count distribution is centered around 3-4 active filters.
+    # High-impact rolls (year / geo / award) keep their high
+    # probability — they pull the floor up to ~1 pin so every game
+    # has *something*. Low-impact rolls (drafted_by / college /
+    # max_career / first-name initial) are bumped above their old
+    # vestigial 3-6% range so they show up enough to feel like real
+    # dimensions of the random gen.
     p_year      = 0.80 if is_off else 0.65
     p_geo       = 0.55 if is_off else 0.45
     p_award     = 0.45 if is_off else 0.35
@@ -1703,15 +1712,12 @@ def _random_trivia_template(
     p_min_stat  = 0.30 if is_off else 0.15
     p_max_stat  = 0.15 if is_off else 0.05
     p_initial   = 0.15 if is_off else 0.10
-    # Newly-randomized dimensions — kept low since they each narrow
-    # the answer pool meaningfully and we don't want every game
-    # piling all of these on at once.
-    p_drafted_by    = 0.06
-    p_draft_year    = 0.10 if is_off else 0.07
-    p_first_initial = 0.10 if is_off else 0.07
-    p_college       = 0.08 if is_off else 0.05
+    p_drafted_by    = 0.13 if is_off else 0.10
+    p_draft_year    = 0.15 if is_off else 0.10
+    p_first_initial = 0.13 if is_off else 0.10
+    p_college       = 0.13 if is_off else 0.08
     p_min_career    = 0.18 if is_off else 0.10
-    p_max_career    = 0.06 if is_off else 0.03
+    p_max_career    = 0.10 if is_off else 0.05
 
     # Year range — pin if user gave start and/or end, else maybe random.
     min_floor = _STAT_MIN_SEASON.get(rank_by, 1970)
@@ -1928,7 +1934,53 @@ def _random_trivia_template(
     elif rng.random() < p_drafted_by:
         spec["drafted_by"] = rng.choice(_RANDOM_TEAMS)
 
+    # Soft cap on pin count. With 14 independent rolls some games
+    # accumulate 7+ filters and end up nearly impossible. Drop random
+    # NON-PINNED dimensions until we're at the cap. User-pinned
+    # filters from `overrides` are sacrosanct — never dropped.
+    _trim_to_max_pins(spec, overrides, rng, max_pins=6)
+
     return spec
+
+
+# Dimensions safe to drop when trimming over-stuffed templates.
+# Excludes the always-set core (rank_by / n / position / mode /
+# unique) and tiebreak (sort order, not a filter).
+_TRIMMABLE_KEYS: tuple[str, ...] = (
+    "team", "division", "conference",
+    "has_award", "ever_won_award",
+    "rookie_only", "draft_rounds",
+    "min_stats", "max_stats",
+    "min_career_stats", "max_career_stats",
+    "first_name_contains", "last_name_contains",
+    "college", "drafted_by",
+    "draft_start", "draft_end",
+    "min_seasons",
+    "start", "end",
+)
+
+
+def _trim_to_max_pins(
+    spec: dict, overrides: dict, rng, *, max_pins: int,
+) -> None:
+    """Drop random non-user-pinned dimensions until the pin count
+    is <= max_pins. Mutates ``spec`` in place."""
+    pinned_keys = set(overrides or {})
+    while True:
+        active = [k for k in _TRIMMABLE_KEYS if k in spec]
+        if len(active) <= max_pins:
+            return
+        droppable = [k for k in active if k not in pinned_keys]
+        if not droppable:
+            # Every active dimension was user-pinned. Respect the
+            # user's pins and stop trimming.
+            return
+        # draft_start/draft_end roll together — drop both as a pair.
+        victim = rng.choice(droppable)
+        spec.pop(victim, None)
+        if victim in ("draft_start", "draft_end"):
+            spec.pop("draft_start", None)
+            spec.pop("draft_end", None)
 
 
 _CAREER_TOPN_KEYS = {

@@ -240,11 +240,11 @@ attempts before falling back to a minimum-filter template.
 
 **What the random generator can roll.** Every supported filter
 dimension is reachable from a fully-random call (no pins). Hit rates
-across a 5,000-sample sweep at the current probabilities:
+across a 10,000-sample sweep at current probabilities:
 
 | dimension                         | hits  | how it's picked                              |
 |-----------------------------------|-------|----------------------------------------------|
-| `team` / `division` / `conference`| ~13% each | season mode only, mutually exclusive   |
+| `team` / `division` / `conference`| ~14% each | season mode only, mutually exclusive   |
 | `has_award`                       | 12%   | season mode only                             |
 | `ever_won_award`                  | 31%   | both modes (career mode rolls it more often) |
 | `rookie_only`                     | 15%   | season mode only                             |
@@ -252,20 +252,41 @@ across a 5,000-sample sweep at the current probabilities:
 | `min_stats`                       | 23%   | season mode only; per-season threshold       |
 | `max_stats`                       |  5%   | season mode only; e.g. high-volume / low-yardage |
 | `min_career_stats`                | 18%   | both modes; career SUM floor                 |
-| `max_career_stats`                |  2%   | both modes; career SUM ceiling               |
+| `max_career_stats`                |  4%   | both modes; career SUM ceiling               |
 | `last_name_contains` (initial)    | 15%   | both modes                                   |
-| `first_name_contains` (initial)   |  9%   | both modes                                   |
-| `college`                         |  8%   | both modes; curated 29-school list           |
-| `drafted_by`                      |  6%   | both modes                                   |
-| `draft_start` / `draft_end`       |  9% (paired) | both modes; random window 1970-2024  |
+| `first_name_contains` (initial)   | 11%   | both modes                                   |
+| `college`                         | 11%   | both modes; curated 29-school list           |
+| `drafted_by`                      | 12%   | both modes                                   |
+| `draft_start` / `draft_end`       | 13% (paired) | both modes; random window 1970-2024  |
 | `min_seasons`                     |  7%   | career mode only                             |
 
 Plus the always-rolled dimensions: `rank_by` (weighted toward
-offense / fantasy), `position` (stat-compatible pool), `n` (5 / 10 /
-15), `unique` (~67% true), and `mode` (~25% career, ~75% season).
-Career-mode templates skip filters that don't apply (team / division
-/ conference / has_award / rookie_only / per-season min/max_stats);
+offense / fantasy), `position` (stat-compatible pool — defensive
+stats prefer DL / LB / DB / SAFETY alias groups, offensive stats
+prefer their natural position), `n` (5 / 10 / 15), `unique` (~67%
+true), and `mode` (~25% career, ~75% season). Career-mode
+templates skip filters that don't apply (team / division /
+conference / has_award / rookie_only / per-season min/max_stats);
 season-mode templates skip career-mode-only filters (min_seasons).
+
+**Pin-count distribution.** Active-filter counts (excluding the
+always-set core) cluster around 3-4. Across 10,000 samples:
+
+```
+0 pins   1.3%  #
+1 pin    4.4%  ####
+2 pins  11.2%  ###########
+3 pins  20.2%  ####################
+4 pins  24.2%  ########################
+5 pins  20.2%  ####################
+6 pins  18.4%  ##################
+7+      0.0%
+```
+
+A soft cap drops random non-user-pinned dimensions if a draw goes
+over 6 pins, so games never become unguessably restrictive. User-
+pinned filters from the form / CLI are sacrosanct — never trimmed.
+Mean active-pin count: 3.96.
 
 Probabilities are kept low for the narrower filters so games don't
 pile up four restrictive pins at once and slip into the empty-set
