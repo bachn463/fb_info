@@ -261,12 +261,14 @@ across a 10,000-sample sweep at current probabilities:
 | `min_seasons`                     |  7%   | career mode only                             |
 
 Plus the always-rolled dimensions: `rank_by` (weighted toward
-offense / fantasy), `position` (defaults to `ALL` — broad
-cross-position games unless the user pins a specific position or
-alias group like `FLEX` / `SAFETY` / `DB` / `LB` / `DL`), `n` (5 /
-10 / 15), `unique` (~67% true), and `mode` (~25% career, ~75%
-season). Career-mode templates skip filters that don't apply (team
-/ division / conference / has_award / rookie_only / per-season
+offense / fantasy), `position` (sampled from a broad pool when
+not pinned: ~27% `ALL`, ~13% `FLEX`, then 6-7% each across `QB` /
+`RB` / `WR` / `TE` / `K` / `SAFETY` / `DB` / `LB` / `DL` — so
+games span the full position landscape rather than always
+restricting to the rank-by's natural fit), `n` (5 / 10 / 15),
+`unique` (~67% true), and `mode` (~25% career, ~75% season).
+Career-mode templates skip filters that don't apply (team /
+division / conference / has_award / rookie_only / per-season
 min/max_stats); season-mode templates skip career-mode-only
 filters (min_seasons).
 

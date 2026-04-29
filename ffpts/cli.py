@@ -1573,6 +1573,19 @@ _COMPANION_MAX_STAT_FOR: dict[str, list[tuple[str, float]]] = {
 # names too — same list since both filters are substring matches).
 _LAST_NAME_INITIALS: list[str] = list("ABCDEFGHIJKLMNOPRSTW")
 
+# Broad position pool sampled when the random gen picks position
+# without a user pin. ALL is weighted heaviest (broadest answer
+# space), then the alias groups + skill positions, then niche
+# concrete labels. The user described the desired default as "any"
+# position — this list realizes that.
+_RANDOM_POSITIONS_ANY: list[str] = [
+    "ALL", "ALL", "ALL", "ALL",                     # ~30% weight on ALL
+    "FLEX", "FLEX",                                 # ~14% RB+WR+TE
+    "QB", "RB", "WR", "TE",                         # ~7% each
+    "SAFETY", "DB", "LB", "DL",                     # defensive groups
+    "K",                                            # kickers (low share)
+]
+
 # Colleges sampled when the random gen rolls a `--college` pin.
 # Curated list of programs with deep NFL representation so a random
 # pick almost always returns a non-empty answer set.
@@ -1673,16 +1686,18 @@ def _random_trivia_template(
     else:
         mode = "career" if rng.random() < 0.25 else "season"
 
-    # Position — defaults to ALL when not pinned, so the random gen
-    # produces broad cross-position games rather than always
-    # restricting to the rank-by's natural fit. Users who want a
-    # specific position (or one of the alias groups: FLEX / SAFETY /
-    # DB / LB / DL) pin it explicitly. The _STAT_COMPATIBLE_POSITIONS
-    # map is still used elsewhere as a soundness check.
+    # Position — when not pinned, pick from a broad pool that mixes
+    # ALL, alias groups (FLEX / SAFETY / DB / LB / DL), and concrete
+    # labels. ALL carries the most weight so unfiltered games still
+    # come up most often, but specific positions appear regularly so
+    # games vary. Stat-compat is intentionally NOT used here: a
+    # random "top 10 RB by pass_yds" or "K by rec_yds" produces
+    # near-empty answer sets that the quality gate re-rolls — that's
+    # fine; the user explicitly asked for any-position random.
     if overrides.get("position"):
         position = overrides["position"]
     else:
-        position = "ALL"
+        position = rng.choice(_RANDOM_POSITIONS_ANY)
 
     spec: dict = {
         "rank_by":  rank_by,

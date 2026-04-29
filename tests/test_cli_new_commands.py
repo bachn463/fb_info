@@ -396,14 +396,16 @@ def test_trivia_random_seed_42_title_consistency(tmp_path):
     assert title1 is not None and title1 == title2
 
 
-def test_trivia_random_defaults_position_to_all(tmp_path):
-    """When the user doesn't pin a position, random trivia defaults
-    to position=ALL (no position filter). This produces broad
-    cross-position games rather than restricting to the rank-by's
-    natural position."""
+def test_trivia_random_position_picks_from_broad_pool(tmp_path):
+    """When the user doesn't pin a position, the random gen picks
+    from a broad pool (ALL + alias groups + concrete labels), so
+    different seeds produce different position scopes."""
+    from ffpts.cli import _RANDOM_POSITIONS_ANY
+
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
-    for seed in range(20):
+    seen_positions: set[str] = set()
+    for seed in range(40):
         r = runner.invoke(
             app, ["trivia", "random", "--seed", str(seed), "--db", str(db)],
             input="quit\n",
@@ -414,10 +416,6 @@ def test_trivia_random_defaults_position_to_all(tmp_path):
         )
         if title is None:
             continue
-        # The "Top N <unit> by ..." form (no position word in head)
-        # is what ALL produces. A position pin would render as
-        # "Top N <POS> player-seasons by ..." with POS between N and
-        # the unit phrase.
         for unit in (" player-seasons by ", " career-totals by "):
             if unit in title:
                 head, _, _ = title.partition(unit)
@@ -425,16 +423,21 @@ def test_trivia_random_defaults_position_to_all(tmp_path):
         else:
             continue
         head_parts = head.split()
-        # head_parts: ["Top", "10"] for ALL position; ["Top", "10", "POS"]
-        # for a pinned position. With no override, every game should
-        # render as just "Top N <unit>".
-        assert len(head_parts) == 2, (
-            f"seed {seed}: expected position=ALL (no position word), got {title!r}"
-        )
+        # head_parts is ["Top", "N"] when position is ALL (no word
+        # in the title), or ["Top", "N", "POS"] otherwise.
+        position = head_parts[2] if len(head_parts) >= 3 else "ALL"
+        seen_positions.add(position)
+    # Across 40 seeds we should see at least 4 distinct positions
+    # from the broad pool (heavily weighted toward ALL but other
+    # picks come up regularly).
+    assert len(seen_positions) >= 4, f"got only {seen_positions}"
+    # Every position seen must be in the documented broad pool.
+    for p in seen_positions:
+        assert p in set(_RANDOM_POSITIONS_ANY), f"unexpected pos {p!r}"
 
 
 def test_trivia_random_with_pinned_position_keeps_pin(tmp_path):
-    """Pinned --position must override the default-ALL behavior."""
+    """Pinned --position must override the broad-pool random pick."""
     db = tmp_path / "ff.duckdb"
     _populated_db(db)
     r = runner.invoke(
