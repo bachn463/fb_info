@@ -2007,6 +2007,7 @@ _CAREER_TOPN_KEYS = {
     "min_career_stats", "max_career_stats",
     # Player-attribute filters that compose with career queries.
     "draft_rounds", "drafted_by",
+    "draft_start", "draft_end",
     "first_name_contains", "last_name_contains",
 }
 

@@ -840,6 +840,36 @@ def test_trivia_random_label_changes_with_overrides(tmp_path):
     assert "(random with pins)" in pinned.output
 
 
+def test_trivia_random_career_mode_honors_draft_year_pins():
+    """Regression — _CAREER_TOPN_KEYS once excluded draft_start /
+    draft_end so career-mode trivia silently dropped those pins
+    even though career_topN accepts them. Verify the keys go through
+    by inspecting the resolved template dict for a career-mode
+    invocation."""
+    import random
+
+    from ffpts.cli import _CAREER_TOPN_KEYS, _random_trivia_template
+
+    rng = random.Random(0)
+    spec = _random_trivia_template(
+        rng,
+        overrides={
+            "mode":        "career",
+            "rank_by":     "fpts_ppr",
+            "position":    "FLEX",
+            "draft_start": 1970,
+            "draft_end":   1997,
+        },
+    )
+    assert spec["draft_start"] == 1970
+    assert spec["draft_end"] == 1997
+    # Both keys must also be in _CAREER_TOPN_KEYS so _resolve_template
+    # forwards them to career_topN. (career_topN's signature accepts
+    # them; the bug was the gate set.)
+    assert "draft_start" in _CAREER_TOPN_KEYS
+    assert "draft_end" in _CAREER_TOPN_KEYS
+
+
 def test_random_gen_can_roll_every_filter_dimension():
     """Regression — every supported filter dimension must be
     reachable by the random gen across a reasonable seed sweep.
