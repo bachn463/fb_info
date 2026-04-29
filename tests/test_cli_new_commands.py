@@ -833,6 +833,49 @@ def test_trivia_random_label_changes_with_overrides(tmp_path):
     assert "(random with pins)" in pinned.output
 
 
+def test_random_gen_can_roll_every_filter_dimension():
+    """Regression — every supported filter dimension must be
+    reachable by the random gen across a reasonable seed sweep.
+    The user explicitly asked: 'is every single option possible to be
+    a random limiter (even if I don't explicitly add it)'.
+
+    A 5000-sample sweep at the current probabilities hits each of
+    the dimensions below at least 50 times. Probabilities can be
+    tuned in cli.py without breaking this test as long as none drop
+    to 0."""
+    import random
+    from collections import Counter
+
+    from ffpts.cli import _random_trivia_template
+
+    seen: Counter = Counter()
+    rng = random.Random(0)
+    for _ in range(5000):
+        spec = _random_trivia_template(rng)
+        for k in spec:
+            seen[k] += 1
+
+    # Every reachable filter dimension on the random gen.
+    must_reach = [
+        # season-mode filters
+        "team", "division", "conference",
+        "has_award", "rookie_only",
+        "min_stats", "max_stats",
+        # career-mode filter
+        "min_seasons",
+        # both modes
+        "ever_won_award", "draft_rounds",
+        "min_career_stats", "max_career_stats",
+        "first_name_contains", "last_name_contains",
+        "college", "drafted_by",
+        "draft_start", "draft_end",
+    ]
+    missing = [k for k in must_reach if seen[k] == 0]
+    assert not missing, (
+        f"these dimensions never rolled across 5000 samples: {missing}"
+    )
+
+
 def test_trivia_random_some_seed_produces_no_unique_title(tmp_path):
     """At least one of the first 30 random seeds should land on a
     `unique=False` template, surfacing the multi-season tag in the

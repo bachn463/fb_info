@@ -1567,8 +1567,63 @@ _COMPANION_MAX_STAT_FOR: dict[str, list[tuple[str, float]]] = {
     "fpts_std":     [("games", 13)],
 }
 
-# Initials sampled for the last-name letter filter.
+# Initials sampled for the last-name letter filter (and now first
+# names too — same list since both filters are substring matches).
 _LAST_NAME_INITIALS: list[str] = list("ABCDEFGHIJKLMNOPRSTW")
+
+# Colleges sampled when the random gen rolls a `--college` pin.
+# Curated list of programs with deep NFL representation so a random
+# pick almost always returns a non-empty answer set.
+_RANDOM_COLLEGES: list[str] = [
+    "Alabama", "Ohio State", "Michigan", "USC", "Oklahoma",
+    "Texas", "LSU", "Florida", "Notre Dame", "Penn State",
+    "Georgia", "Auburn", "Miami", "Florida State", "UCLA",
+    "Tennessee", "Nebraska", "Wisconsin", "Iowa", "Pittsburgh",
+    "Stanford", "Clemson", "Texas A&M", "Oregon", "Washington",
+    "Arkansas", "Mississippi", "Mississippi State", "South Carolina",
+]
+
+# Career-scale companion thresholds. Used in BOTH season and career
+# modes — a single-season ranking restricted by a career floor is
+# fun trivia ("top 10 single-season pass_yds among QBs with 50000+
+# career pass_yds"). Same shape as _COMPANION_MIN_STAT_FOR but with
+# career-totals values.
+_COMPANION_MIN_CAREER_STAT_FOR: dict[str, list[tuple[str, float]]] = {
+    "pass_yds":     [("pass_yds", 30000), ("pass_td", 200), ("games", 100)],
+    "pass_td":     [("pass_yds", 30000), ("pass_td", 200)],
+    "pass_cmp":     [("pass_yds", 25000), ("games", 80)],
+    "pass_rating":  [("pass_att", 1500)],
+    "pass_cmp_pct": [("pass_att", 1500)],
+    "rush_yds":     [("rush_yds", 5000), ("rush_td", 30), ("games", 80)],
+    "rush_td":      [("rush_yds", 5000), ("rush_td", 30)],
+    "rush_att":     [("rush_yds", 5000), ("games", 80)],
+    "rec_yds":      [("rec_yds", 5000), ("rec_td", 30), ("games", 80)],
+    "rec":          [("rec", 300), ("rec_yds", 4000)],
+    "rec_td":       [("rec_yds", 4000), ("rec_td", 30)],
+    "targets":      [("rec", 300), ("games", 80)],
+    "catch_rate":   [("targets", 200)],
+    "fpts_ppr":     [("games", 80)],
+    "fpts_half":    [("games", 80)],
+    "fpts_std":     [("games", 80)],
+    "def_sacks":    [("def_sacks", 30), ("games", 100)],
+    "def_int":      [("def_int", 20), ("games", 100)],
+    "def_int_td":   [("def_int", 15)],
+    "def_pass_def": [("games", 100)],
+    "def_tackles_combined": [("games", 100)],
+    "fg_made":      [("fg_att", 100)],
+    "fg_long":      [("fg_made", 50)],
+    "kr_yds":       [("kr", 50)],
+    "pr_yds":       [("pr", 50)],
+}
+_COMPANION_MAX_CAREER_STAT_FOR: dict[str, list[tuple[str, float]]] = {
+    # "Modest career, big single season" — contrast trivia.
+    "rush_yds":     [("games", 100)],
+    "pass_yds":     [("pass_int", 100)],
+    "rec_yds":      [("rec_yds", 9999)],
+    "fpts_ppr":     [("games", 100)],
+    "def_sacks":    [("def_sacks", 50)],
+    "def_int":      [("def_int", 30)],
+}
 
 
 def _random_trivia_template(
@@ -1640,14 +1695,23 @@ def _random_trivia_template(
     # special-teams keep modest probabilities so we don't pile filters
     # onto an already-narrow pool.
     is_off  = rank_by in _OFFENSE_AND_FANTASY_RANK_BY
-    p_year     = 0.80 if is_off else 0.65
-    p_geo      = 0.55 if is_off else 0.45
-    p_award    = 0.45 if is_off else 0.35
-    p_rookie   = 0.20 if is_off else 0.15
-    p_draft_rd = 0.20 if is_off else 0.15
-    p_min_stat = 0.30 if is_off else 0.15
-    p_max_stat = 0.15 if is_off else 0.05
-    p_initial  = 0.15 if is_off else 0.10
+    p_year      = 0.80 if is_off else 0.65
+    p_geo       = 0.55 if is_off else 0.45
+    p_award     = 0.45 if is_off else 0.35
+    p_rookie    = 0.20 if is_off else 0.15
+    p_draft_rd  = 0.20 if is_off else 0.15
+    p_min_stat  = 0.30 if is_off else 0.15
+    p_max_stat  = 0.15 if is_off else 0.05
+    p_initial   = 0.15 if is_off else 0.10
+    # Newly-randomized dimensions — kept low since they each narrow
+    # the answer pool meaningfully and we don't want every game
+    # piling all of these on at once.
+    p_drafted_by    = 0.06
+    p_draft_year    = 0.10 if is_off else 0.07
+    p_first_initial = 0.10 if is_off else 0.07
+    p_college       = 0.08 if is_off else 0.05
+    p_min_career    = 0.18 if is_off else 0.10
+    p_max_career    = 0.06 if is_off else 0.03
 
     # Year range — pin if user gave start and/or end, else maybe random.
     min_floor = _STAT_MIN_SEASON.get(rank_by, 1970)
@@ -1739,14 +1803,36 @@ def _random_trivia_template(
         elif rng.random() < p_initial:
             spec["last_name_contains"] = rng.choice(_LAST_NAME_INITIALS)
 
-        # Pure passthrough — season-only flags with no random pick.
-        for key in (
-            "first_name_contains", "drafted_by",
-            "draft_start", "draft_end",
-            "tiebreak_by",
-        ):
-            if overrides.get(key):
-                spec[key] = overrides[key]
+        # First-name initial — symmetrical to last-name. Independent
+        # roll so both can apply (rare but possible).
+        if overrides.get("first_name_contains"):
+            spec["first_name_contains"] = overrides["first_name_contains"]
+        elif rng.random() < p_first_initial:
+            spec["first_name_contains"] = rng.choice(_LAST_NAME_INITIALS)
+
+        # Career-stat thresholds — random rolls apply to season mode
+        # too: "top single-season pass_yds for QBs with 50000+
+        # career pass_yds" is reasonable trivia. Pinned overrides
+        # win.
+        if overrides.get("min_career_stats"):
+            spec["min_career_stats"] = dict(overrides["min_career_stats"])
+        elif rng.random() < p_min_career:
+            cands = _COMPANION_MIN_CAREER_STAT_FOR.get(rank_by, [])
+            if cands:
+                stat, value = rng.choice(cands)
+                spec.setdefault("min_career_stats", {})[stat] = value
+        if overrides.get("max_career_stats"):
+            spec["max_career_stats"] = dict(overrides["max_career_stats"])
+        elif rng.random() < p_max_career:
+            cands = _COMPANION_MAX_CAREER_STAT_FOR.get(rank_by, [])
+            if cands:
+                stat, value = rng.choice(cands)
+                spec.setdefault("max_career_stats", {})[stat] = value
+
+        # tiebreak_by — passthrough only (it's a sort order, not a
+        # limiter, so rolling it randomly doesn't add trivia value).
+        if overrides.get("tiebreak_by"):
+            spec["tiebreak_by"] = overrides["tiebreak_by"]
 
     else:
         # ----- Career-mode (career_topN) filter generation -----
@@ -1769,7 +1855,8 @@ def _random_trivia_template(
             spec["ever_won_award"] = [rng.choice(_RANDOM_AWARDS)]
 
         # min_career_stats — ratio stats need a higher floor (career
-        # totals across many seasons), pinned values win.
+        # totals across many seasons), pinned values win. The random
+        # roll below adds a companion threshold on top of that.
         pinned_min_career = dict(overrides.get("min_career_stats") or {})
         if rank_by == "pass_cmp_pct" and "pass_att" not in pinned_min_career:
             pinned_min_career["pass_att"] = 200
@@ -1777,9 +1864,19 @@ def _random_trivia_template(
             pinned_min_career["targets"] = 100
         if pinned_min_career:
             spec["min_career_stats"] = pinned_min_career
+        if not overrides.get("min_career_stats") and rng.random() < p_min_career:
+            cands = _COMPANION_MIN_CAREER_STAT_FOR.get(rank_by, [])
+            if cands:
+                stat, value = rng.choice(cands)
+                spec.setdefault("min_career_stats", {})[stat] = value
 
         if overrides.get("max_career_stats"):
-            spec["max_career_stats"] = overrides["max_career_stats"]
+            spec["max_career_stats"] = dict(overrides["max_career_stats"])
+        elif rng.random() < p_max_career:
+            cands = _COMPANION_MAX_CAREER_STAT_FOR.get(rank_by, [])
+            if cands:
+                stat, value = rng.choice(cands)
+                spec.setdefault("max_career_stats", {})[stat] = value
 
         # min_seasons floor random toggle — keeps career leaderboards
         # from being dominated by 1-game wonders.
@@ -1793,25 +1890,43 @@ def _random_trivia_template(
         elif rng.random() < p_draft_rd:
             spec["draft_rounds"] = list(rng.choice(_RANDOM_DRAFT_ROUNDS))
 
-        # Drafted-by team — pinned only (no random pick — too narrow
-        # when combined with all the other career filters; user can
-        # always pin it explicitly).
-        if overrides.get("drafted_by"):
-            spec["drafted_by"] = overrides["drafted_by"]
-
         # Last-name initial — same random toggle as season mode.
         if overrides.get("last_name_contains"):
             spec["last_name_contains"] = overrides["last_name_contains"]
         elif rng.random() < p_initial:
             spec["last_name_contains"] = rng.choice(_LAST_NAME_INITIALS)
 
-        # First-name pin passes straight through.
+        # First-name initial — random roll, symmetric to last-name.
         if overrides.get("first_name_contains"):
             spec["first_name_contains"] = overrides["first_name_contains"]
+        elif rng.random() < p_first_initial:
+            spec["first_name_contains"] = rng.choice(_LAST_NAME_INITIALS)
 
-    # College — applies to both modes (career_topN added it earlier).
+    # ----- Shared (both modes) random rolls -----
+    # college / drafted_by / draft_start / draft_end apply to both
+    # season and career queries — handled here once so we don't
+    # branch-duplicate.
+
     if overrides.get("college"):
         spec["college"] = overrides["college"]
+    elif rng.random() < p_college:
+        spec["college"] = rng.choice(_RANDOM_COLLEGES)
+
+    if overrides.get("draft_start") is not None or overrides.get("draft_end") is not None:
+        if overrides.get("draft_start") is not None:
+            spec["draft_start"] = overrides["draft_start"]
+        if overrides.get("draft_end") is not None:
+            spec["draft_end"] = overrides["draft_end"]
+    elif rng.random() < p_draft_year:
+        ds = rng.randint(1970, 2010)
+        de = rng.randint(ds, 2024)
+        spec["draft_start"] = ds
+        spec["draft_end"]   = de
+
+    if overrides.get("drafted_by"):
+        spec["drafted_by"] = overrides["drafted_by"]
+    elif rng.random() < p_drafted_by:
+        spec["drafted_by"] = rng.choice(_RANDOM_TEAMS)
 
     return spec
 
