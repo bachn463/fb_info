@@ -311,9 +311,22 @@ def _make_app(db_path: Path) -> FastAPI:
                     )
                 overrides["teammate_of_player_id"] = row[0]
                 overrides["teammate_of_name"]      = row[1]
-            template, answers, _, _, _ = _pick_non_empty_template(
-                con, rng, overrides=overrides if overrides else None,
-            )
+            # Outer retry: _pick_non_empty_template already runs 25
+            # internal attempts + a fallback. On a tight pin combo
+            # (e.g. user-pinned teammate_of_X with random companions
+            # that occasionally over-narrow) the fallback can still
+            # land empty. Try a few more outer cycles before showing
+            # the error screen — each cycle re-rolls every random
+            # dimension. User pins are forwarded every cycle so
+            # genuinely impossible combos still surface the error
+            # rather than looping forever.
+            template, answers = None, []
+            for _ in range(5):
+                template, answers, _, _, _ = _pick_non_empty_template(
+                    con, rng, overrides=overrides if overrides else None,
+                )
+                if answers:
+                    break
         finally:
             con.close()
         if not answers:

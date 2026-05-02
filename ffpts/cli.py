@@ -2057,7 +2057,15 @@ def _random_trivia_template(
     # accumulate 7+ filters and end up nearly impossible. Drop random
     # NON-PINNED dimensions until we're at the cap. User-pinned
     # filters from `overrides` are sacrosanct — never dropped.
-    _trim_to_max_pins(spec, overrides, rng, max_pins=6)
+    #
+    # When teammate_of is in the spec, the eligible pool is already
+    # narrow (the anchor's career graph) — stacking 5+ companion pins
+    # on top makes empty answer sets near-certain. Cap teammate_of
+    # specs at 3 active filters so the teammate dimension actually
+    # surfaces in finished templates (otherwise the retry loop almost
+    # always rerolls it away).
+    max_pins = 3 if spec.get("teammate_of_player_id") else 6
+    _trim_to_max_pins(spec, overrides, rng, max_pins=max_pins)
 
     return spec
 
@@ -2138,6 +2146,10 @@ def _resolve_template(con: duckdb.DuckDBPyConnection, template: dict):
     position = args.pop("position", "ALL")
     mode = args.pop("mode", "season")
     args.pop("unique", None) if mode == "career" else None
+    # ``teammate_of_name`` is a display-only companion to
+    # ``teammate_of_player_id`` (used by the title builder); the SQL
+    # helpers don't accept it, so strip before forwarding kwargs.
+    args.pop("teammate_of_name", None)
     try:
         if mode == "career":
             career_args = {
@@ -2532,9 +2544,18 @@ def trivia_random(
             if resolved:
                 overrides["teammate_of_player_id"] = resolved[0]
                 overrides["teammate_of_name"] = resolved[1]
-        template, answers, n_, rank_by_, position_ = _pick_non_empty_template(
-            con, rng, overrides=overrides if overrides else None,
-        )
+        # Outer retry: see web.py for rationale. Tight pin combos
+        # (notably teammate_of_X) can occasionally exhaust both the
+        # 25 inner attempts and the fallback; a few more outer cycles
+        # reroll every random dimension and almost always recover.
+        template, answers = None, []
+        n_, rank_by_, position_ = 0, "", ""
+        for _ in range(5):
+            template, answers, n_, rank_by_, position_ = _pick_non_empty_template(
+                con, rng, overrides=overrides if overrides else None,
+            )
+            if answers:
+                break
     finally:
         con.close()
     if not answers:
