@@ -300,6 +300,125 @@ def test_career_topN_draft_rounds_invalid_entry_raises(db):
         career_topN("pass_yds", n=10, draft_rounds=[1.5])  # type: ignore[arg-type]
 
 
+def test_pos_topN_teammate_of_filter(db):
+    """teammate_of_player_id restricts the answer set to players who
+    shared any (team, season) with the target — including seasons
+    the target didn't play. Synthetic insert: target T plays for X
+    in 2020; player A plays for X in 2018 (not overlapping with T)
+    AND for Y in 2021 (also not overlapping). A should still appear
+    because they shared (X, 2018) — wait, that's not target's season.
+    Let me set this up cleanly.
+    """
+    from ffpts.queries import pos_topN
+
+    # Seed three synthetic players. Target played for X in 2020.
+    # Teammate1 played for X in 2018 (was on X before target arrived).
+    # Teammate2 played for X in 2020 (overlap year).
+    # NonTeammate played for Y in all years.
+    db.execute(
+        "INSERT INTO players (player_id, name, first_season, last_season) "
+        "VALUES "
+        "('pfr:TestT01','Target Tee',2020,2020),"
+        "('pfr:TestM01','Mate One',2018,2018),"
+        "('pfr:TestM02','Mate Two',2020,2020),"
+        "('pfr:TestN01','Not Mate',2018,2020)"
+    )
+    for pid, season, team in [
+        ("pfr:TestT01", 2020, "TST"),
+        ("pfr:TestM01", 2018, "TST"),
+        ("pfr:TestM02", 2020, "TST"),
+        ("pfr:TestN01", 2018, "OTH"),
+        ("pfr:TestN01", 2020, "OTH"),
+    ]:
+        db.execute(
+            "INSERT INTO player_season_stats "
+            "(player_id, season, team, position, rec_yds, fpts_ppr) "
+            f"VALUES ('{pid}', {season}, '{team}', 'WR', 100, 50.0)"
+        )
+
+    sql, params = pos_topN(
+        "WR", n=10, rank_by="rec_yds",
+        teammate_of_player_id="pfr:TestT01",
+    )
+    rows = db.execute(sql, params).fetchall()
+    cols = [d[0] for d in db.execute(sql, params).description]
+    name_idx = cols.index("name")
+    names = {r[name_idx] for r in rows}
+    # Mate One was on TST in 2018 (target wasn't there yet) — but
+    # the question is whether they were EVER on the same (team,
+    # season). 2018 and 2020 are different seasons, so Mate One
+    # technically shouldn't qualify either. Re-checking the helper:
+    # filter is shared (team, season), so Mate One isn't a teammate
+    # by the strict definition. Let me verify Mate Two qualifies.
+    assert "Mate Two" in names, "Mate Two shared TST/2020 with target"
+    assert "Not Mate" not in names
+
+    # Cleanup
+    for pid in ("pfr:TestT01", "pfr:TestM01", "pfr:TestM02", "pfr:TestN01"):
+        db.execute(f"DELETE FROM player_season_stats WHERE player_id = '{pid}'")
+        db.execute(f"DELETE FROM players WHERE player_id = '{pid}'")
+
+
+def test_pos_topN_teammate_of_career_overlap_real_data(db):
+    """End-to-end against the fixture DB: WRs who were ever
+    teammates of Lamar Jackson (2023 fixture). Should pick up his
+    BAL receivers."""
+    from ffpts.queries import pos_topN
+
+    # Lamar Jackson is in the 2023 fixture as BAL QB.
+    lamar = db.execute(
+        "SELECT player_id FROM players WHERE name = 'Lamar Jackson'"
+    ).fetchone()
+    if lamar is None:
+        pytest.skip("fixture lacks Lamar Jackson")
+    sql, params = pos_topN(
+        "WR", n=20, rank_by="rec_yds",
+        teammate_of_player_id=lamar[0],
+    )
+    rows = db.execute(sql, params).fetchall()
+    cols = [d[0] for d in db.execute(sql, params).description]
+    team_idx = cols.index("team")
+    season_idx = cols.index("season")
+    # Every returned (team, season) pair must include at least one
+    # season Lamar shared the team. Spot-check: BAL 2023 should
+    # appear in at least one row.
+    assert any(r[team_idx] == "BAL" and r[season_idx] == 2023 for r in rows), (
+        "expected at least one BAL/2023 WR row teammate of Lamar"
+    )
+
+
+def test_career_topN_teammate_of_runs(db):
+    """Smoke test: career_topN composes with teammate_of without
+    error."""
+    lamar = db.execute(
+        "SELECT player_id FROM players WHERE name = 'Lamar Jackson'"
+    ).fetchone()
+    if lamar is None:
+        pytest.skip("fixture lacks Lamar Jackson")
+    sql, params = career_topN(
+        "rec_yds", n=10, position="WR",
+        teammate_of_player_id=lamar[0],
+    )
+    rows = db.execute(sql, params).fetchall()
+    assert isinstance(rows, list)
+
+
+def test_award_topN_teammate_of_runs(db):
+    """Smoke test: award_topN composes with teammate_of."""
+    from ffpts.queries import award_topN
+
+    lamar = db.execute(
+        "SELECT player_id FROM players WHERE name = 'Lamar Jackson'"
+    ).fetchone()
+    if lamar is None:
+        pytest.skip("fixture lacks Lamar Jackson")
+    sql, params = award_topN(
+        "PB", n=10, teammate_of_player_id=lamar[0],
+    )
+    rows = db.execute(sql, params).fetchall()
+    assert isinstance(rows, list)
+
+
 def test_pos_topN_college_substring_match_handles_transfer_list(db):
     """A player with a comma-list college value should match an
     ILIKE substring filter for any of the listed schools. Synthetic

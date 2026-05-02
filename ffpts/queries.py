@@ -110,6 +110,33 @@ TRIVIA_RANK_BY_ALLOWED: frozenset[str] = RANK_BY_ALLOWED - frozenset({
 })
 
 
+def _teammate_of_clause(player_id_qualifier: str) -> str:
+    """SQL fragment that filters to players who *ever* shared a
+    (team, season) with the target player. "Ever" means at any
+    point in either career — answer rows don't have to be in a
+    season the target actually played; this catches e.g. "best
+    season ever for any WR who played alongside Justin Fields at
+    any point".
+
+    Adds two ? params (caller appends): target player_id (subquery
+    lookup) and target player_id again (self-exclusion).
+
+    ``player_id_qualifier`` is the SQL expression that yields the
+    candidate player's id in the outer query — varies per helper:
+      pos_topN     -> "v_player_season_full.player_id"
+      career_topN  -> "s.player_id"
+      award_topN   -> "pa.player_id"
+    """
+    return (
+        f"{player_id_qualifier} IN ("
+        "SELECT DISTINCT s2.player_id FROM player_season_stats s2 "
+        "WHERE (s2.team, s2.season) IN ("
+        "SELECT s3.team, s3.season FROM player_season_stats s3 "
+        "WHERE s3.player_id = ?"
+        ") AND s2.player_id != ?)"
+    )
+
+
 def pos_topN(
     position: str,
     *,
@@ -137,6 +164,7 @@ def pos_topN(
     college: str | None = None,
     min_career_stats: dict[str, float] | None = None,
     max_career_stats: dict[str, float] | None = None,
+    teammate_of_player_id: str | None = None,
 ) -> tuple[str, list]:
     """Top-N player-seasons at a given position, ranked by ``rank_by``.
 
@@ -399,6 +427,14 @@ def pos_topN(
         )
         params.extend(career_params)
 
+    # Teammate-of filter — restricts to players who shared any
+    # (team, season) with the target. Answer rows DON'T have to be
+    # in a season the target played — that's the "ever teammates"
+    # semantic the user asked for.
+    if teammate_of_player_id:
+        where_clauses.append(_teammate_of_clause("player_id"))
+        params.extend([teammate_of_player_id, teammate_of_player_id])
+
     # Build ORDER BY: primary rank_by DESC, then user-supplied
     # tiebreaks ASC (validated against allowlist), then season ASC
     # as the deterministic fallback.
@@ -547,6 +583,7 @@ def career_topN(
     last_name_contains: str | None = None,
     draft_start: int | None = None,
     draft_end: int | None = None,
+    teammate_of_player_id: str | None = None,
 ) -> tuple[str, list]:
     """Top-N players by *career-total* of ``rank_by`` summed across the
     seasons matching the (optional) filters.
@@ -684,6 +721,13 @@ def career_topN(
         )
         params.extend(career_params)
 
+    # Teammate-of: career-mode answer rows can be in seasons the
+    # target NEVER played — we want "best ever for any teammate of
+    # X", not "best in the seasons they actually overlapped".
+    if teammate_of_player_id:
+        where.append(_teammate_of_clause("s.player_id"))
+        params.extend([teammate_of_player_id, teammate_of_player_id])
+
     where_sql = " AND ".join(where)
     having_clauses: list[str] = []
     if min_seasons is not None:
@@ -744,6 +788,7 @@ def award_topN(
     drafted_by: str | None = None,
     first_name_contains: str | None = None,
     last_name_contains: str | None = None,
+    teammate_of_player_id: str | None = None,
 ) -> tuple[str, list]:
     """Top-N players by career *count* of a single award type.
 
@@ -921,6 +966,12 @@ def award_topN(
             "GROUP BY player_id HAVING " + " AND ".join(career_clauses) + ")"
         )
         params.extend(career_params)
+
+    # Teammate-of: restrict to award winners who shared any
+    # (team, season) with the target player.
+    if teammate_of_player_id:
+        where.append(_teammate_of_clause("pa.player_id"))
+        params.extend([teammate_of_player_id, teammate_of_player_id])
 
     where_sql = " AND ".join(where)
     # Correlated subqueries reference p.player_id (which is in GROUP BY)

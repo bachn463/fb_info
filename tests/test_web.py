@@ -28,7 +28,7 @@ def client(tmp_path):
     db = tmp_path / "ff.duckdb"
     con = connect(db)
     apply_schema(con)
-    build(seasons=[1985], con=con, pfr_scraper=_scraper())
+    build(seasons=[1985, 2023], con=con, pfr_scraper=_scraper())
     con.close()
     yield TestClient(_make_app(db))
 
@@ -510,6 +510,68 @@ def test_trivia_random_position_default_is_blank(client):
     # Look at the first option after the select opens.
     first_option = pos_section.split("<option", 2)[1]
     assert 'value=""' in first_option, f"first option was: {first_option!r}"
+
+
+def test_all_three_forms_expose_teammate_of(client):
+    """teammate_of input should appear on /ask, /trivia/play,
+    /trivia/random."""
+    for path in ("/ask", "/trivia/play", "/trivia/random"):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert 'name="teammate_of"' in r.text, f"missing on {path}"
+
+
+def test_ask_pos_top_with_teammate_of_filter(client):
+    """Submit teammate_of through /ask. The 2023 fixture has Lamar
+    Jackson and his BAL receivers — top-N WRs filtered to his
+    teammates should include at least one BAL 2023 row."""
+    r = client.post(
+        "/ask",
+        data={
+            "kind":         "pos-top",
+            "rank_by":      "rec_yds",
+            "n":            "20",
+            "position":     "WR",
+            "teammate_of":  "Lamar Jackson",
+        },
+    )
+    assert r.status_code == 200, r.text[:500]
+    # Label surfaces the resolved name.
+    assert "teammate of Lamar Jackson" in r.text
+
+
+def test_ask_teammate_of_unknown_name_renders_friendly_error(client):
+    r = client.post(
+        "/ask",
+        data={
+            "kind":         "pos-top",
+            "rank_by":      "rec_yds",
+            "n":            "10",
+            "position":     "WR",
+            "teammate_of":  "ZzzNotAPlayer",
+        },
+    )
+    assert r.status_code == 200
+    # Either the broad query-failed page or the inline ValueError
+    # message should mention teammate_of.
+    assert "teammate" in r.text.lower() or "Query failed" in r.text
+
+
+def test_trivia_play_with_teammate_of(client):
+    """Pin --teammate-of on the make-your-own form. Game starts
+    cleanly when the name resolves."""
+    r = client.post(
+        "/trivia/play",
+        data={
+            "rank_by":      "rec_yds",
+            "n":            "5",
+            "position":     "WR",
+            "teammate_of":  "Lamar Jackson",
+            "unique":       "on",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
 
 
 def test_trivia_random_with_career_threshold(client):

@@ -287,6 +287,14 @@ def ask_pos_top(
         help="Append `conference`, `division`, `franchise` columns "
              "to the printed table. Default off.",
     ),
+    teammate_of: str | None = typer.Option(
+        None, "--teammate-of",
+        help='Restrict to players who shared any (team, season) with '
+             "the named player at any point. Example: "
+             '`--teammate-of "Justin Fields"` -> top WRs who were ever '
+             "Fields' teammate, even in seasons he didn't play. Accepts "
+             'either a name (substring match) or a `pfr:Slug` directly.',
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the DuckDB file."),
 ) -> None:
     """Top-N player-seasons at a position, ranked by a stat column.
@@ -328,27 +336,31 @@ def ask_pos_top(
     min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
     max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
 
-    sql, params = pos_topN(
-        position, n=n, rank_by=rank_by,
-        start=start, end=end, draft_rounds=rounds_list,
-        team=team, division=division, conference=conference,
-        first_name_contains=first_name_contains,
-        last_name_contains=last_name_contains,
-        unique=unique,
-        has_award=has_award if has_award else None,
-        ever_won_award=ever_won if ever_won else None,
-        rookie_only=rookie_only,
-        draft_start=draft_start, draft_end=draft_end,
-        drafted_by=drafted_by,
-        tiebreak_by=tiebreak_by if tiebreak_by else None,
-        min_stats=min_stats_dict if min_stats_dict else None,
-        max_stats=max_stats_dict if max_stats_dict else None,
-        college=college,
-        min_career_stats=min_career_dict if min_career_dict else None,
-        max_career_stats=max_career_dict if max_career_dict else None,
-    )
     con = _open_db(db)
     try:
+        teammate_resolved = _resolve_teammate_of(con, teammate_of)
+        teammate_id = teammate_resolved[0] if teammate_resolved else None
+        teammate_name = teammate_resolved[1] if teammate_resolved else None
+        sql, params = pos_topN(
+            position, n=n, rank_by=rank_by,
+            start=start, end=end, draft_rounds=rounds_list,
+            team=team, division=division, conference=conference,
+            first_name_contains=first_name_contains,
+            last_name_contains=last_name_contains,
+            unique=unique,
+            has_award=has_award if has_award else None,
+            ever_won_award=ever_won if ever_won else None,
+            rookie_only=rookie_only,
+            draft_start=draft_start, draft_end=draft_end,
+            drafted_by=drafted_by,
+            tiebreak_by=tiebreak_by if tiebreak_by else None,
+            min_stats=min_stats_dict if min_stats_dict else None,
+            max_stats=max_stats_dict if max_stats_dict else None,
+            college=college,
+            min_career_stats=min_career_dict if min_career_dict else None,
+            max_career_stats=max_career_dict if max_career_dict else None,
+            teammate_of_player_id=teammate_id,
+        )
         cur = con.execute(sql, params)
         cols = [d[0] for d in cur.description]
         rows = cur.fetchall()
@@ -532,6 +544,12 @@ def trivia_play(
         None, "--max-career-stat",
         help="Career-total ceiling of the form col=value. Repeatable.",
     ),
+    teammate_of: str | None = typer.Option(
+        None, "--teammate-of",
+        help='Restrict the answer set to players who were ever a '
+             "teammate of the named player (shared any (team, "
+             'season)). Example: --teammate-of "Justin Fields".',
+    ),
     unique: bool = typer.Option(
         True, "--unique/--no-unique",
         help="Default ON for trivia: each player counts once. Use "
@@ -573,27 +591,31 @@ def trivia_play(
     min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
     max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
 
-    sql, params = pos_topN(
-        position, n=n, rank_by=rank_by,
-        start=start, end=end, draft_rounds=rounds_list,
-        team=team, division=division, conference=conference,
-        first_name_contains=first_name_contains,
-        last_name_contains=last_name_contains,
-        unique=unique,
-        has_award=has_award if has_award else None,
-        ever_won_award=ever_won if ever_won else None,
-        rookie_only=rookie_only,
-        draft_start=draft_start, draft_end=draft_end,
-        drafted_by=drafted_by,
-        tiebreak_by=tiebreak_by if tiebreak_by else None,
-        min_stats=min_stats_dict if min_stats_dict else None,
-        max_stats=max_stats_dict if max_stats_dict else None,
-        college=college,
-        min_career_stats=min_career_dict if min_career_dict else None,
-        max_career_stats=max_career_dict if max_career_dict else None,
-    )
     con = _open_db(db)
     try:
+        teammate_resolved = _resolve_teammate_of(con, teammate_of)
+        teammate_id = teammate_resolved[0] if teammate_resolved else None
+        teammate_name = teammate_resolved[1] if teammate_resolved else None
+        sql, params = pos_topN(
+            position, n=n, rank_by=rank_by,
+            start=start, end=end, draft_rounds=rounds_list,
+            team=team, division=division, conference=conference,
+            first_name_contains=first_name_contains,
+            last_name_contains=last_name_contains,
+            unique=unique,
+            has_award=has_award if has_award else None,
+            ever_won_award=ever_won if ever_won else None,
+            rookie_only=rookie_only,
+            draft_start=draft_start, draft_end=draft_end,
+            drafted_by=drafted_by,
+            tiebreak_by=tiebreak_by if tiebreak_by else None,
+            min_stats=min_stats_dict if min_stats_dict else None,
+            max_stats=max_stats_dict if max_stats_dict else None,
+            college=college,
+            min_career_stats=min_career_dict if min_career_dict else None,
+            max_career_stats=max_career_dict if max_career_dict else None,
+            teammate_of_player_id=teammate_id,
+        )
         cur = con.execute(sql, params)
         cols = [d[0] for d in cur.description]
         answers = [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -619,6 +641,7 @@ def trivia_play(
         college=college,
         min_career_stats=min_career_dict if min_career_dict else None,
         max_career_stats=max_career_dict if max_career_dict else None,
+        teammate_of_name=teammate_name,
     )
 
     # Save a template-shaped spec so this game can be replayed later.
@@ -653,6 +676,8 @@ def trivia_play(
     if max_career_dict:                 play_spec["max_career_stats"]    = max_career_dict
     if min_stats_dict:                  play_spec["min_stats"]           = min_stats_dict
     if max_stats_dict:                  play_spec["max_stats"]           = max_stats_dict
+    if teammate_id:                     play_spec["teammate_of_player_id"] = teammate_id
+    if teammate_name:                   play_spec["teammate_of_name"] = teammate_name
     game_id = save_spec(
         play_spec, label="play",
         history_dir=_history_dir_for_db(db),
@@ -677,6 +702,7 @@ def _build_trivia_title(
     college: str | None = None,
     min_career_stats: dict | None = None,
     max_career_stats: dict | None = None,
+    teammate_of_name: str | None = None,
 ) -> str:
     """Render a one-line description of the active trivia query so
     users know what they're guessing at game start and at exit."""
@@ -741,6 +767,9 @@ def _build_trivia_title(
 
     if college:
         clauses.append(f"from {college}")
+
+    if teammate_of_name:
+        clauses.append(f"ever a teammate of {teammate_of_name}")
 
     if first_name_contains:
         clauses.append(f"first name contains '{first_name_contains}'")
@@ -1140,6 +1169,12 @@ def ask_career(
         None, "--draft-end",
         help="Filter to players drafted in or before this year.",
     ),
+    teammate_of: str | None = typer.Option(
+        None, "--teammate-of",
+        help='Restrict to players who shared any (team, season) with '
+             "the named player at any point. Composes with both "
+             "--rank-by and --award modes.",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
 ) -> None:
     """Top-N players by career value of either a stat sum (--rank-by)
@@ -1177,40 +1212,45 @@ def ask_career(
     min_career_dict = _parse_stat_pairs(min_career_stat, "--min-career-stat")
     max_career_dict = _parse_stat_pairs(max_career_stat, "--max-career-stat")
 
-    if award:
-        # Award-count ranking. award_topN now composes with the same
-        # filters career_topN does (except min_seasons, which is a
-        # career-stat concept and doesn't apply to award counts).
-        sql, params = award_topN(
-            award, n=n, position=position,
-            college=college,
-            min_career_stats=min_career_dict if min_career_dict else None,
-            max_career_stats=max_career_dict if max_career_dict else None,
-            start=start, end=end,
-            ever_won_award=ever_won if ever_won else None,
-            draft_rounds=rounds_list,
-            draft_start=draft_start, draft_end=draft_end,
-            drafted_by=drafted_by,
-            first_name_contains=first_name_contains,
-            last_name_contains=last_name_contains,
-        )
-    else:
-        sql, params = career_topN(
-            rank_by, n=n, position=position,
-            start=start, end=end,
-            ever_won_award=ever_won if ever_won else None,
-            min_seasons=min_seasons,
-            college=college,
-            min_career_stats=min_career_dict if min_career_dict else None,
-            max_career_stats=max_career_dict if max_career_dict else None,
-            draft_rounds=rounds_list,
-            drafted_by=drafted_by,
-            first_name_contains=first_name_contains,
-            last_name_contains=last_name_contains,
-            draft_start=draft_start, draft_end=draft_end,
-        )
     con = _open_db(db)
     try:
+        teammate_resolved = _resolve_teammate_of(con, teammate_of)
+        teammate_id = teammate_resolved[0] if teammate_resolved else None
+        teammate_name = teammate_resolved[1] if teammate_resolved else None
+        if award:
+            # Award-count ranking. award_topN now composes with the same
+            # filters career_topN does (except min_seasons, which is a
+            # career-stat concept and doesn't apply to award counts).
+            sql, params = award_topN(
+                award, n=n, position=position,
+                college=college,
+                min_career_stats=min_career_dict if min_career_dict else None,
+                max_career_stats=max_career_dict if max_career_dict else None,
+                start=start, end=end,
+                ever_won_award=ever_won if ever_won else None,
+                draft_rounds=rounds_list,
+                draft_start=draft_start, draft_end=draft_end,
+                drafted_by=drafted_by,
+                first_name_contains=first_name_contains,
+                last_name_contains=last_name_contains,
+                teammate_of_player_id=teammate_id,
+            )
+        else:
+            sql, params = career_topN(
+                rank_by, n=n, position=position,
+                start=start, end=end,
+                ever_won_award=ever_won if ever_won else None,
+                min_seasons=min_seasons,
+                college=college,
+                min_career_stats=min_career_dict if min_career_dict else None,
+                max_career_stats=max_career_dict if max_career_dict else None,
+                draft_rounds=rounds_list,
+                drafted_by=drafted_by,
+                first_name_contains=first_name_contains,
+                last_name_contains=last_name_contains,
+                draft_start=draft_start, draft_end=draft_end,
+                teammate_of_player_id=teammate_id,
+            )
         cur = con.execute(sql, params)
         cols = [d[0] for d in cur.description]
         _print_rows(cur.fetchall(), cols)
@@ -1308,6 +1348,34 @@ def _resolve_player(
         err=True,
     )
     return None
+
+
+def _resolve_teammate_of(
+    con: duckdb.DuckDBPyConnection, value: str | None
+) -> tuple[str, str] | None:
+    """Resolve a ``--teammate-of`` argument to (player_id, exact_name).
+
+    Accepts either a ``pfr:Slug`` (used directly) or a display name
+    (resolved via ``_resolve_player``). On ambiguous / missing match
+    the underlying resolver prints a disambiguation list to stderr;
+    we then exit with code 2 so the user can re-invoke with a more
+    specific value.
+
+    Returns None when ``value`` itself is None/empty (caller knows
+    no teammate filter is in effect). Two-tuple lets callers feed
+    the name to the title builder while threading the player_id to
+    the SQL helper."""
+    if not value:
+        return None
+    if value.startswith("pfr:"):
+        row = _lookup_player_by_id(con, value)
+        if row is None:
+            raise typer.Exit(code=2)
+        return row[0], row[1]
+    row = _resolve_player(con, value)
+    if row is None:
+        raise typer.Exit(code=2)
+    return row[0], row[1]
 
 
 def _lookup_player_by_id(
@@ -1953,6 +2021,16 @@ def _random_trivia_template(
     elif rng.random() < p_drafted_by:
         spec["drafted_by"] = rng.choice(_RANDOM_TEAMS)
 
+    # Teammate-of: passthrough only — never randomly chosen, since
+    # picking a random "be a teammate of <random player>" would
+    # produce nearly-empty answer sets most of the time. Carries the
+    # resolved display name alongside for the title builder; the
+    # player_id is what goes to the SQL filter.
+    if overrides.get("teammate_of_player_id"):
+        spec["teammate_of_player_id"] = overrides["teammate_of_player_id"]
+        if overrides.get("teammate_of_name"):
+            spec["teammate_of_name"] = overrides["teammate_of_name"]
+
     # Soft cap on pin count. With 14 independent rolls some games
     # accumulate 7+ filters and end up nearly impossible. Drop random
     # NON-PINNED dimensions until we're at the cap. User-pinned
@@ -2009,6 +2087,7 @@ _CAREER_TOPN_KEYS = {
     "draft_rounds", "drafted_by",
     "draft_start", "draft_end",
     "first_name_contains", "last_name_contains",
+    "teammate_of_player_id",
 }
 
 
@@ -2203,6 +2282,7 @@ def _run_template(
         college=args.get("college"),
         min_career_stats=args.get("min_career_stats"),
         max_career_stats=args.get("max_career_stats"),
+        teammate_of_name=args.get("teammate_of_name"),
     )
     typer.echo(f"({label})")
     _run_trivia_loop(answers, rank_by=rank_by, title=title)
@@ -2282,6 +2362,11 @@ def trivia_random(
     college: str | None = typer.Option(None, "--college"),
     min_career_stat: list[str] | None = typer.Option(None, "--min-career-stat"),
     max_career_stat: list[str] | None = typer.Option(None, "--max-career-stat"),
+    teammate_of: str | None = typer.Option(
+        None, "--teammate-of",
+        help="Pin the answer set to ever-teammates of the named "
+             'player. Example: --teammate-of "Justin Fields".',
+    ),
     unique: bool | None = typer.Option(
         None, "--unique/--no-unique",
         help="Pin uniqueness. Default (omit the flag) leaves it as a "
@@ -2365,6 +2450,10 @@ def trivia_random(
     if min_career_dict:       overrides["min_career_stats"]   = min_career_dict
     if max_career_dict:       overrides["max_career_stats"]   = max_career_dict
     if unique is not None:    overrides["unique"]             = unique
+    # teammate_of resolution needs an open DB — defer until after
+    # we've opened the connection. Keep the raw name in the local
+    # `teammate_of_name` for later assembly.
+    teammate_of_name = teammate_of
     if mode:
         if mode not in ("season", "career"):
             typer.echo(
@@ -2378,6 +2467,15 @@ def trivia_random(
     rng = random.Random(seed)
     con = _open_db(db)
     try:
+        # Resolve --teammate-of inside the connection block so the
+        # resolver can read the players table. Stash the resolved
+        # display name on the spec for the title builder; the
+        # player_id flows through to the SQL filter.
+        if teammate_of_name:
+            resolved = _resolve_teammate_of(con, teammate_of_name)
+            if resolved:
+                overrides["teammate_of_player_id"] = resolved[0]
+                overrides["teammate_of_name"] = resolved[1]
         template, answers, n_, rank_by_, position_ = _pick_non_empty_template(
             con, rng, overrides=overrides if overrides else None,
         )

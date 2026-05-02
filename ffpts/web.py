@@ -106,6 +106,8 @@ def _make_app(db_path: Path) -> FastAPI:
         career_rank_by: str = Form("fpts_ppr"),
         career_award: str = Form(""),
         min_seasons: str = Form(""),
+        # shared (added late — appears in both kind branches).
+        teammate_of: str = Form(""),
     ) -> str:
         try:
             cols, rows, label = _run_ask(
@@ -124,6 +126,7 @@ def _make_app(db_path: Path) -> FastAPI:
                 ever_won=[ever_won] if ever_won else None,
                 min_career_stats=_parse_stat_pair_form(min_career_stat) or None,
                 max_career_stats=_parse_stat_pair_form(max_career_stat) or None,
+                teammate_of=teammate_of or None,
                 # pos-top only
                 rank_by=rank_by,
                 team=team or None,
@@ -192,6 +195,7 @@ def _make_app(db_path: Path) -> FastAPI:
         drafted_by: str = Form(""),
         draft_start: str = Form(""),
         draft_end: str = Form(""),
+        teammate_of: str = Form(""),
     ):
         template = {
             "rank_by":  rank_by,
@@ -222,6 +226,9 @@ def _make_app(db_path: Path) -> FastAPI:
         if xcs:                 template["max_career_stats"]   = xcs
         rounds_list = _parse_draft_rounds_form(draft_rounds)
         if rounds_list:         template["draft_rounds"]       = rounds_list
+        # Teammate-of resolution lives in _start_game so the open
+        # connection there can do the player_id lookup.
+        if teammate_of:         template["_teammate_of_raw"]   = teammate_of
         return _start_game(db_path, template, label="play")
 
     @app.get("/trivia/random", response_class=HTMLResponse)
@@ -248,6 +255,7 @@ def _make_app(db_path: Path) -> FastAPI:
         drafted_by: str = Form(""),
         draft_start: str = Form(""),
         draft_end: str = Form(""),
+        teammate_of: str = Form(""),
     ):
         import random
 
@@ -283,6 +291,26 @@ def _make_app(db_path: Path) -> FastAPI:
         rng = random.Random(int(seed) if seed else None)
         con = _open_db(db_path)
         try:
+            # Resolve --teammate-of inside the connection block
+            # (needs the players table). On a bad match, surface a
+            # friendly error rather than 500.
+            if teammate_of:
+                from ffpts.cli import _resolve_player, _lookup_player_by_id
+                row = (
+                    _lookup_player_by_id(con, teammate_of)
+                    if teammate_of.startswith("pfr:")
+                    else _resolve_player(con, teammate_of)
+                )
+                if row is None:
+                    return _page(
+                        "Trivia · Random",
+                        f"<p>--teammate-of {html.escape(teammate_of)} didn't "
+                        "resolve to a unique player. Try a more specific "
+                        "name or a <code>pfr:Slug</code>.</p>"
+                        '<p><a href="/trivia/random">Back</a></p>',
+                    )
+                overrides["teammate_of_player_id"] = row[0]
+                overrides["teammate_of_name"]      = row[1]
             template, answers, _, _, _ = _pick_non_empty_template(
                 con, rng, overrides=overrides if overrides else None,
             )
@@ -431,6 +459,9 @@ def _run_ask(
     career_rank_by: str = "fpts_ppr",
     career_award: str | None = None,
     min_seasons: int | None = None,
+    # teammate filter — resolved inside this helper since we already
+    # have the connection open.
+    teammate_of: str | None = None,
 ) -> tuple[list[str], list[tuple], str]:
     """Run the chosen ask helper and return (columns, rows, page_label).
 
@@ -446,6 +477,27 @@ def _run_ask(
     """
     con = _open_db(db_path)
     try:
+        # Resolve --teammate-of (name or pfr:Slug) to a player_id once
+        # so we can thread the same id through whichever helper kind
+        # picks. The resolver exits with code 2 on ambiguous matches —
+        # FastAPI will surface that as a 500, so wrap it in a friendlier
+        # ValueError instead.
+        teammate_id: str | None = None
+        teammate_name: str | None = None
+        if teammate_of:
+            from ffpts.cli import _resolve_player, _lookup_player_by_id
+            row = (
+                _lookup_player_by_id(con, teammate_of)
+                if teammate_of.startswith("pfr:")
+                else _resolve_player(con, teammate_of)
+            )
+            if row is None:
+                raise ValueError(
+                    f"--teammate-of {teammate_of!r}: no unique player match. "
+                    "Try a more specific name or a pfr:Slug."
+                )
+            teammate_id, teammate_name = row[0], row[1]
+
         if kind == "pos-top":
             sql, params = pos_topN(
                 position, n=n, rank_by=rank_by,
@@ -463,10 +515,12 @@ def _run_ask(
                 draft_start=draft_start, draft_end=draft_end,
                 drafted_by=drafted_by,
                 tiebreak_by=tiebreak_by,
+                teammate_of_player_id=teammate_id,
             )
             label = (
                 f"pos-top: top {n} {position} by {rank_by}"
                 + (f" ({start}-{end})" if start and end else "")
+                + (f", teammate of {teammate_name}" if teammate_name else "")
             )
             cur = con.execute(sql, params)
             cols = [d[0] for d in cur.description]
@@ -495,8 +549,12 @@ def _run_ask(
                     draft_start=draft_start, draft_end=draft_end,
                     first_name_contains=first_name_contains,
                     last_name_contains=last_name_contains,
+                    teammate_of_player_id=teammate_id,
                 )
-                label = f"career: top {n} {position} by {career_award} count"
+                label = (
+                    f"career: top {n} {position} by {career_award} count"
+                    + (f", teammate of {teammate_name}" if teammate_name else "")
+                )
             else:
                 sql, params = career_topN(
                     career_rank_by, n=n, position=position,
@@ -510,8 +568,12 @@ def _run_ask(
                     drafted_by=drafted_by,
                     draft_start=draft_start, draft_end=draft_end,
                     min_seasons=min_seasons,
+                    teammate_of_player_id=teammate_id,
                 )
-                label = f"career: top {n} {position} by SUM({career_rank_by})"
+                label = (
+                    f"career: top {n} {position} by SUM({career_rank_by})"
+                    + (f", teammate of {teammate_name}" if teammate_name else "")
+                )
             cur = con.execute(sql, params)
             cols = [d[0] for d in cur.description]
             rows = cur.fetchall()
@@ -526,6 +588,29 @@ def _start_game(db_path: Path, template: dict, *, label: str):
     """Resolve a play-style template into a game and redirect."""
     con = _open_db(db_path)
     try:
+        # Resolve --teammate-of (passed as _teammate_of_raw on the
+        # incoming template) inside the connection block. The raw
+        # field is removed once resolved; we replace it with the
+        # canonical (teammate_of_player_id, teammate_of_name) pair
+        # that _resolve_template / title-builder consume.
+        raw = template.pop("_teammate_of_raw", None)
+        if raw:
+            from ffpts.cli import _resolve_player, _lookup_player_by_id
+            row = (
+                _lookup_player_by_id(con, raw)
+                if raw.startswith("pfr:")
+                else _resolve_player(con, raw)
+            )
+            if row is None:
+                return _page(
+                    "Trivia",
+                    f"<p>--teammate-of {html.escape(raw)} didn't resolve "
+                    "to a unique player. Try a more specific name or a "
+                    "<code>pfr:Slug</code>.</p>"
+                    '<p><a href="/trivia/play">Back</a></p>',
+                )
+            template["teammate_of_player_id"] = row[0]
+            template["teammate_of_name"]      = row[1]
         answers, n, rank_by, position = _resolve_template(con, template)
     finally:
         con.close()
@@ -714,6 +799,8 @@ count).</p>
     <p>college: <input name="college" placeholder="Alabama" size="14">
        first-name has: <input name="first_name_contains" size="8">
        last-name has:  <input name="last_name_contains" size="8"></p>
+    <p>teammate-of: <input name="teammate_of" placeholder="Justin Fields" size="18">
+       <small>(name or pfr:Slug — restricts to ever-teammates)</small></p>
     <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22">
        drafted-by: <input name="drafted_by" placeholder="PIT" size="6"></p>
     <p>draft-start: <input type="number" name="draft_start" size="6">
@@ -809,6 +896,8 @@ def _trivia_play_form_body() -> str:
      <small>(HOF is in the list — covers Hall of Fame inductees.)</small></p>
   <p>college: <input name="college" placeholder="Alabama" size="14">
      <small>(substring match against players.college)</small></p>
+  <p>teammate-of: <input name="teammate_of" placeholder="Justin Fields" size="18">
+     <small>(name or pfr:Slug — restricts to ever-teammates)</small></p>
   <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22">
      drafted-by: <input name="drafted_by" placeholder="PIT" size="6"></p>
   <p>draft-start: <input type="number" name="draft_start" size="6">
@@ -852,6 +941,8 @@ a hard pin, the rest stays random.</p>
      ever-won (any season): <select name="ever_won">{award_opts}</select></p>
   <p>college: <input name="college" placeholder="Alabama" size="14">
      <small>(HOF is in the award lists; --ever-won HOF restricts to inductees.)</small></p>
+  <p>teammate-of: <input name="teammate_of" placeholder="Justin Fields" size="18">
+     <small>(name or pfr:Slug — restricts to ever-teammates)</small></p>
   <p>draft-rounds: <input name="draft_rounds" placeholder="1 or 4,5 or undrafted" size="22">
      drafted-by: <input name="drafted_by" placeholder="PIT" size="6"></p>
   <p>draft-start: <input type="number" name="draft_start" size="6">
