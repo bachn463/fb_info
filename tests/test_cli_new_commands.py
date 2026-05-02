@@ -879,16 +879,27 @@ def test_random_gen_can_roll_every_filter_dimension():
     A 5000-sample sweep at the current probabilities hits each of
     the dimensions below at least 50 times. Probabilities can be
     tuned in cli.py without breaking this test as long as none drop
-    to 0."""
+    to 0.
+
+    ``teammate_of_player_id`` is gated on the caller supplying a
+    non-empty pool of eligible anchors (queried from player_awards in
+    production); we pass a synthetic pool here so the dimension is
+    exercised without needing a populated DB."""
     import random
     from collections import Counter
 
     from ffpts.cli import _random_trivia_template
 
+    teammate_pool = [
+        ("pfr:JackBo00", "Bo Jackson"),
+        ("pfr:MannPe00", "Peyton Manning"),
+        ("pfr:RiceJe00", "Jerry Rice"),
+    ]
+
     seen: Counter = Counter()
     rng = random.Random(0)
     for _ in range(5000):
-        spec = _random_trivia_template(rng)
+        spec = _random_trivia_template(rng, teammate_pool=teammate_pool)
         for k in spec:
             seen[k] += 1
 
@@ -906,11 +917,23 @@ def test_random_gen_can_roll_every_filter_dimension():
         "first_name_contains", "last_name_contains",
         "college", "drafted_by",
         "draft_start", "draft_end",
+        "teammate_of_player_id",
     ]
     missing = [k for k in must_reach if seen[k] == 0]
     assert not missing, (
         f"these dimensions never rolled across 5000 samples: {missing}"
     )
+
+    # And the empty/None pool path must NOT roll teammate_of, so the
+    # gate works as documented (callers without an awards table get
+    # no random teammate-of anchors).
+    seen_no_pool: Counter = Counter()
+    rng = random.Random(0)
+    for _ in range(2000):
+        spec = _random_trivia_template(rng, teammate_pool=None)
+        for k in spec:
+            seen_no_pool[k] += 1
+    assert seen_no_pool["teammate_of_player_id"] == 0
 
 
 def test_trivia_random_some_seed_produces_no_unique_title(tmp_path):

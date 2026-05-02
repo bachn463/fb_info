@@ -1710,7 +1710,10 @@ _COMPANION_MAX_CAREER_STAT_FOR: dict[str, list[tuple[str, float]]] = {
 
 
 def _random_trivia_template(
-    rng, overrides: dict | None = None
+    rng,
+    overrides: dict | None = None,
+    *,
+    teammate_pool: list[tuple[str, str]] | None = None,
 ) -> dict:
     """Build a fresh template by sampling each filter dimension.
 
@@ -1724,6 +1727,14 @@ def _random_trivia_template(
     skips the corresponding random pick and uses the user value.
     Dimensions not in overrides stay random. Empty dict / None means
     fully random (the default behavior).
+
+    ``teammate_pool`` is an optional list of (player_id, name) pairs
+    eligible to anchor a random teammate-of pin. The caller (typically
+    ``_pick_non_empty_template``) pre-fetches it from the DB so the
+    retry loop doesn't re-query. None / empty disables the random
+    teammate-of roll. The pool is meant to enforce a quality bar on
+    the anchor (e.g. only players with at least one award row) so
+    random teammate-of games don't pin a no-name nobody's heard of.
     """
     overrides = overrides or {}
 
@@ -1805,6 +1816,11 @@ def _random_trivia_template(
     p_college       = 0.13 if is_off else 0.08
     p_min_career    = 0.18 if is_off else 0.10
     p_max_career    = 0.10 if is_off else 0.05
+    # Teammate-of: kept low because it's a strong, narrow filter (the
+    # anchor's career arc dominates the eligible pool). Pool eligibility
+    # is gated upstream — only players with at least one award row are
+    # candidates — so when it does roll, the anchor is recognizable.
+    p_teammate      = 0.06 if is_off else 0.04
 
     # Year range — pin if user gave start and/or end, else maybe random.
     min_floor = _STAT_MIN_SEASON.get(rank_by, 1970)
@@ -2021,15 +2037,21 @@ def _random_trivia_template(
     elif rng.random() < p_drafted_by:
         spec["drafted_by"] = rng.choice(_RANDOM_TEAMS)
 
-    # Teammate-of: passthrough only — never randomly chosen, since
-    # picking a random "be a teammate of <random player>" would
-    # produce nearly-empty answer sets most of the time. Carries the
-    # resolved display name alongside for the title builder; the
+    # Teammate-of: pin survives if user supplied one; otherwise we
+    # may roll a random anchor from ``teammate_pool``. The pool is
+    # restricted to players with at least one award row (cheapest
+    # "recognizable name" gate the user asked for), so random
+    # teammate-of games never anchor on someone nobody's heard of.
+    # ``teammate_of_name`` rides alongside for the title builder; the
     # player_id is what goes to the SQL filter.
     if overrides.get("teammate_of_player_id"):
         spec["teammate_of_player_id"] = overrides["teammate_of_player_id"]
         if overrides.get("teammate_of_name"):
             spec["teammate_of_name"] = overrides["teammate_of_name"]
+    elif teammate_pool and rng.random() < p_teammate:
+        pid, name = rng.choice(teammate_pool)
+        spec["teammate_of_player_id"] = pid
+        spec["teammate_of_name"] = name
 
     # Soft cap on pin count. With 14 independent rolls some games
     # accumulate 7+ filters and end up nearly impossible. Drop random
@@ -2054,6 +2076,7 @@ _TRIMMABLE_KEYS: tuple[str, ...] = (
     "draft_start", "draft_end",
     "min_seasons",
     "start", "end",
+    "teammate_of_player_id",
 )
 
 
@@ -2073,11 +2096,15 @@ def _trim_to_max_pins(
             # user's pins and stop trimming.
             return
         # draft_start/draft_end roll together — drop both as a pair.
+        # teammate_of_player_id rides with teammate_of_name (display
+        # only) — drop the name when the id goes.
         victim = rng.choice(droppable)
         spec.pop(victim, None)
         if victim in ("draft_start", "draft_end"):
             spec.pop("draft_start", None)
             spec.pop("draft_end", None)
+        elif victim == "teammate_of_player_id":
+            spec.pop("teammate_of_name", None)
 
 
 _CAREER_TOPN_KEYS = {
@@ -2180,6 +2207,29 @@ def _is_quality_answer_set(answers: list[dict] | None, n: int) -> bool:
     return True
 
 
+def _eligible_teammate_pool(
+    con: duckdb.DuckDBPyConnection,
+) -> list[tuple[str, str]]:
+    """Players eligible to anchor a random teammate-of pin.
+
+    The quality bar is "appears at least once in player_awards" — the
+    cheapest "recognizable name" gate available (single SELECT
+    DISTINCT against a small table, ~5-10k rows on a full build). Pro
+    Bowls qualify, so the pool is wide enough that random anchors
+    aren't repetitive but narrow enough that nobodies are excluded.
+    Returns ``(player_id, name)`` tuples; empty if the awards table
+    isn't populated yet (early build, fallback degrades gracefully)."""
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT p.player_id, p.name "
+            "FROM player_awards pa JOIN players p USING (player_id) "
+            "WHERE p.name IS NOT NULL"
+        ).fetchall()
+    except Exception:
+        return []
+    return [(pid, name) for pid, name in rows]
+
+
 def _pick_non_empty_template(
     con: duckdb.DuckDBPyConnection,
     rng,
@@ -2196,8 +2246,13 @@ def _pick_non_empty_template(
     the quality check — the fallback also respects user overrides so
     a too-restrictive pin surfaces the empty/short result rather than
     silently being ignored."""
+    # Pre-fetch the teammate-of anchor pool once: the retry loop runs
+    # up to 25x and the underlying query is constant within a session.
+    teammate_pool = _eligible_teammate_pool(con)
     for _ in range(max_attempts):
-        template = _random_trivia_template(rng, overrides)
+        template = _random_trivia_template(
+            rng, overrides, teammate_pool=teammate_pool,
+        )
         answers, n, rank_by, position = _resolve_template(con, template)
         if _is_quality_answer_set(answers, n):
             return template, answers, n, rank_by, position
@@ -2220,6 +2275,7 @@ def _pick_non_empty_template(
         "draft_rounds", "draft_start", "draft_end", "drafted_by",
         "min_stats", "max_stats", "college",
         "min_career_stats", "max_career_stats", "tiebreak_by",
+        "teammate_of_player_id", "teammate_of_name",
     ):
         if overrides.get(key):
             fallback[key] = overrides[key]
